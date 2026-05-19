@@ -1,17 +1,33 @@
 import postgres from 'postgres';
 import type { Job, Run, StepDefinition, StepRun } from './types';
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL env var is required for lib/db.ts');
+// Lazy client so `next build` page-data collection doesn't crash when
+// DATABASE_URL is absent at build time. The URL is only required when
+// a query actually runs (boot, request handling, cron tick).
+let _sql: ReturnType<typeof postgres> | null = null;
+
+function getSql(): ReturnType<typeof postgres> {
+  if (_sql) return _sql;
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error('DATABASE_URL env var is required at runtime');
+  }
+  _sql = postgres(url, { max: 10, idle_timeout: 30, prepare: false });
+  return _sql;
 }
 
-// Single shared postgres client. porsager/postgres handles pooling internally.
-// Disable automatic snake_case<->camelCase transforms; we do explicit row mapping.
-export const sql = postgres(process.env.DATABASE_URL, {
-  max: 10,
-  idle_timeout: 30,
-  prepare: false,
-});
+const sqlProxyTarget = function () {} as unknown as ReturnType<typeof postgres>;
+
+export const sql: ReturnType<typeof postgres> = new Proxy(sqlProxyTarget, {
+  get(_t, prop) {
+    const client = getSql() as unknown as Record<PropertyKey, unknown>;
+    const value = client[prop];
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
+  apply(_t, _this, args) {
+    return (getSql() as unknown as (...a: unknown[]) => unknown)(...args);
+  },
+}) as ReturnType<typeof postgres>;
 
 let schemaInitPromise: Promise<void> | null = null;
 

@@ -93,7 +93,7 @@ export async function executeJob(
 
     for (const step of job.steps) {
       const result = await executeStepWithRetries(runId, step, ctx);
-      if (!result.ok) {
+      if (result.ok === false) {
         // Mark run failed and stop — downstream steps stay 'pending' in DB,
         // which signals to the UI that they were never attempted.
         await setRunError(runId, result.error);

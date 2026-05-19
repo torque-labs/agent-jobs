@@ -7,7 +7,10 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 RUN npm install -g pnpm@9.15.4
 COPY package.json pnpm-lock.yaml .npmrc ./
-RUN pnpm install --frozen-lockfile
+# Always install dev deps in the build chain — Coolify exports
+# NODE_ENV=production at build time, which makes pnpm skip them
+# otherwise, breaking next build (@tailwindcss/postcss, tsc).
+RUN pnpm install --frozen-lockfile --prod=false
 
 # ---- Stage 2: build ----
 FROM node:22-alpine AS builder
