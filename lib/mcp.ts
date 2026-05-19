@@ -29,9 +29,22 @@ type Managed = {
   closed: boolean;
 };
 
-const SERVERS = new Map<string, Managed>();
-let initialized = false;
-let initPromise: Promise<void> | null = null;
+// Stash registry on globalThis so the server.ts entrypoint and the Next.js
+// route handlers (which may evaluate this module independently) share one
+// set of MCP subprocess handles instead of spawning duplicates.
+type GlobalState = {
+  servers: Map<string, Managed>;
+  initialized: boolean;
+  initPromise: Promise<void> | null;
+};
+const GLOBAL_KEY = '__agentJobsMcp__';
+function state(): GlobalState {
+  const g = globalThis as unknown as Record<string, GlobalState | undefined>;
+  if (!g[GLOBAL_KEY]) {
+    g[GLOBAL_KEY] = { servers: new Map(), initialized: false, initPromise: null };
+  }
+  return g[GLOBAL_KEY] as GlobalState;
+}
 
 // OpenRouter caps tool names to 64 chars and disallows certain chars.
 const SAFE_NAME = /[^a-zA-Z0-9_-]/g;
@@ -140,9 +153,10 @@ function scheduleRestart(managed: Managed): void {
 }
 
 export function initMcp(): Promise<void> {
-  if (initPromise) return initPromise;
-  initPromise = (async () => {
-    if (initialized) return;
+  const s = state();
+  if (s.initPromise) return s.initPromise;
+  s.initPromise = (async () => {
+    if (s.initialized) return;
     const specs = buildSpecs();
     for (const spec of specs) {
       const managed: Managed = {
@@ -154,7 +168,7 @@ export function initMcp(): Promise<void> {
         restartTimer: null,
         closed: false,
       };
-      SERVERS.set(spec.name, managed);
+      s.servers.set(spec.name, managed);
       try {
         await startServer(managed);
       } catch (err) {
@@ -163,13 +177,14 @@ export function initMcp(): Promise<void> {
         scheduleRestart(managed);
       }
     }
-    initialized = true;
+    s.initialized = true;
   })();
-  return initPromise;
+  return s.initPromise;
 }
 
 export async function shutdownMcp(): Promise<void> {
-  for (const m of SERVERS.values()) {
+  const s = state();
+  for (const m of s.servers.values()) {
     m.closed = true;
     if (m.restartTimer) {
       clearTimeout(m.restartTimer);
@@ -181,21 +196,21 @@ export async function shutdownMcp(): Promise<void> {
       console.error(`[mcp] ${m.spec.name} close error:`, err);
     }
   }
-  SERVERS.clear();
-  initialized = false;
-  initPromise = null;
+  s.servers.clear();
+  s.initialized = false;
+  s.initPromise = null;
 }
 
 export function listAllTools(): McpToolDef[] {
   const out: McpToolDef[] = [];
-  for (const m of SERVERS.values()) {
+  for (const m of state().servers.values()) {
     out.push(...m.tools);
   }
   return out;
 }
 
 export function findToolByExposedName(exposedName: string): McpToolDef | null {
-  for (const m of SERVERS.values()) {
+  for (const m of state().servers.values()) {
     for (const t of m.tools) {
       if (t.exposedName === exposedName) return t;
     }
@@ -204,7 +219,7 @@ export function findToolByExposedName(exposedName: string): McpToolDef | null {
 }
 
 export async function callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<string> {
-  const managed = SERVERS.get(serverName);
+  const managed = state().servers.get(serverName);
   if (!managed) throw new Error(`MCP server "${serverName}" not registered`);
   if (!managed.client) throw new Error(`MCP server "${serverName}" not connected (restart pending)`);
 
