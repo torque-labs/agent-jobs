@@ -203,7 +203,6 @@ async function runSingleStep(
   const timeoutMs = (step.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
 
   const tools = buildToolList(step.tools_allowed);
-  console.log(`[orch] step "${step.name}" model=${step.model} tools=${tools.length}`);
   const toolsParam: ChatCompletionTool[] | undefined = tools.length > 0
     ? tools.map((t) => ({
         type: 'function',
