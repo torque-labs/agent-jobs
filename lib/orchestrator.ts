@@ -224,7 +224,7 @@ async function runSingleStep(
         model: step.model,
         messages,
         tools: toolsParam,
-        max_tokens: 8192,
+        max_tokens: 4096,
         stream: false,
       }),
       timeoutMs,
