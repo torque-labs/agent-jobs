@@ -23,7 +23,19 @@ export async function serverFetch<T>(
 ): Promise<T> {
   const base = await getBaseUrl();
   const url = path.startsWith("http") ? path : `${base}${path}`;
-  const res = await fetch(url, { cache: "no-store", ...init });
+  // Forward the incoming request's auth + cookie so the API route's
+  // middleware accepts us — server-side fetches don't inherit them.
+  const h = await headers();
+  const forwarded: Record<string, string> = {};
+  const auth = h.get("authorization");
+  const cookie = h.get("cookie");
+  if (auth) forwarded.authorization = auth;
+  if (cookie) forwarded.cookie = cookie;
+  const res = await fetch(url, {
+    cache: "no-store",
+    ...init,
+    headers: { ...forwarded, ...(init?.headers ?? {}) },
+  });
   if (!res.ok) {
     throw new Error(
       `Fetch ${path} failed: ${res.status} ${res.statusText}`
