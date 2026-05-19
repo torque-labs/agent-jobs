@@ -1,0 +1,40 @@
+# Wraps the existing Dockerfile so we can attach to multiple Docker
+# networks — Coolify's Dockerfile build pack only supports one. Per
+# Coolify docs (https://coolify.io/docs/applications/build-packs/docker-compose)
+# declaring an external network here joins this container to it on
+# every deploy.
+services:
+  agent-jobs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - DATABASE_URL=${DATABASE_URL}
+      - HERMES_API_URL=${HERMES_API_URL}
+      - HERMES_API_TOKEN=${HERMES_API_TOKEN}
+      - OUTLINE_BASE_URL=${OUTLINE_BASE_URL}
+      - OUTLINE_API_KEY=${OUTLINE_API_KEY}
+      - OUTLINE_AGENTS_COLLECTION_ID=${OUTLINE_AGENTS_COLLECTION_ID}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - APP_PASSWORD=${APP_PASSWORD}
+    expose:
+      - "3000"
+    networks:
+      - default
+      - hermes
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+networks:
+  default:
+  hermes:
+    external: true
+    name: cookw4kwo0gw0gock8wgwgwk
