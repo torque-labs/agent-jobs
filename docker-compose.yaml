@@ -10,6 +10,10 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
+      # SERVICE_FQDN_AGENTJOBS_3000 is Coolify's magic var — it
+      # auto-injects Traefik labels routing the configured FQDN
+      # to this service:port. Without it, Coolify's proxy returns 503.
+      - SERVICE_FQDN_AGENTJOBS_3000
       - NODE_ENV=production
       - PORT=3000
       - HOSTNAME=0.0.0.0
