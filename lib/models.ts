@@ -52,13 +52,6 @@ export const MODELS: ModelCatalogEntry[] = [
   { id: 'perplexity/sonar-reasoning', name: 'Perplexity Sonar Reasoning', provider: 'openrouter' },
 ];
 
-// Also add the Hermes alias (routes through the gateway and inherits MCP tools)
-export const HERMES_ALIAS: ModelCatalogEntry = {
-  id: 'hermes-agent',
-  name: 'Hermes Agent (gateway alias, MCPs available)',
-  provider: 'hermes',
-};
-
 export function getAllModels(): ModelCatalogEntry[] {
-  return [HERMES_ALIAS, ...MODELS];
+  return MODELS;
 }
