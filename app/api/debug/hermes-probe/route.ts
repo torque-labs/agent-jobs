@@ -7,13 +7,13 @@ export const runtime = 'nodejs';
 const HOSTS = [
   'hermes-agent',
   'hermes-agent-cookw4kwo0gw0gock8wgwgwk',
-  'hermes-agent-ywkkkg84og4k4csgs84gww8g',
-  'hermes-workspace',
-  'hermes-workspace-cookw4kwo0gw0gock8wgwgwk',
-  'hermes-workspace-e8co4k8csgggkk8gkg8ccgko',
+  'vs48g4wkss8woo0w8o80ckgg',
+  'postgres-yg00wgo8g08wgcw0oco0c00g',
+  'outline-yg00wgo8g08wgcw0oco0c00g',
+  'outline',
 ];
 
-const PORTS = [8642, 9119, 3000];
+const PORTS = [5432, 8642, 3000];
 
 async function resolve(host: string) {
   try {
