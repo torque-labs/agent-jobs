@@ -6,7 +6,7 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 RUN npm install -g pnpm@9.15.4
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml .npmrc ./
 RUN pnpm install --frozen-lockfile
 
 # ---- Stage 2: build ----
