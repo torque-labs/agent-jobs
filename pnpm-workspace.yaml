@@ -1,6 +1,4 @@
-allowBuilds:
-  msw: set this to true or false
-  sharp: set this to true or false
-ignoredBuiltDependencies:
+onlyBuiltDependencies:
+  - esbuild
   - sharp
-  - unrs-resolver
+  - msw
