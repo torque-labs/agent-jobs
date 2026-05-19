@@ -20,7 +20,7 @@ export const TRUMP_DIGEST_JOB = {
   steps: [
     {
       name: 'fetch-baseline',
-      model: 'anthropic/claude-sonnet-4-6',
+      model: 'anthropic/claude-sonnet-4.6',
       system_prompt: `You are a Torque leaderboard data fetcher. Your ONLY job: call mcp_torque_set_active_project, then mcp_torque_get_recurring_incentive, then mcp_torque_preview_incentive_query with the given endDate. Return the raw query result as JSON. Do NOT interpret. Do NOT call ask_torque (it confabulates). FORBIDDEN: any mcp_torque_create_*, mcp_torque_attach_*, mcp_torque_update_*, mcp_torque_register_*, mcp_torque_delete_* tools.`,
       user_template: `Project: TRUMP (projectId cmo7c0lyx00cvjt1j8og67hfn). Offer cmovk8qf900gdk01h71tpsx0y. Fetch the leaderboard snapshot at endDate=2026-05-17T23:59:59Z (end of yesterday-minus-one UTC = the BASELINE timestamp). Use mcp_torque_preview_incentive_query. Paginate to get ALL rows (typically ~185). Return the full raw result.`,
       tools_allowed: ['torque'],
@@ -29,7 +29,7 @@ export const TRUMP_DIGEST_JOB = {
     },
     {
       name: 'fetch-compare',
-      model: 'anthropic/claude-sonnet-4-6',
+      model: 'anthropic/claude-sonnet-4.6',
       system_prompt: `Same role as fetch-baseline.`,
       user_template: `Same project/offer as fetch-baseline. Fetch the leaderboard snapshot at endDate=2026-05-18T23:59:59Z (end of yesterday UTC = the COMPARE timestamp). Same tool, same pagination, same raw output.`,
       tools_allowed: ['torque'],
@@ -38,7 +38,7 @@ export const TRUMP_DIGEST_JOB = {
     },
     {
       name: 'compose',
-      model: 'anthropic/claude-sonnet-4-6',
+      model: 'anthropic/claude-sonnet-4.6',
       system_prompt: `You are the TRUMP digest composer. Given two leaderboard snapshots (baseline + compare), compute exact deltas in your head and emit a markdown digest following this exact structure (return ONLY the markdown, no preamble):
 
 # TRUMP · Time Weighted Holding Leaderboard
@@ -91,7 +91,7 @@ Day N: compute as (compare-date - 2026-05-12).days + 1, where 2026-05-12 is epoc
     },
     {
       name: 'publish',
-      model: 'anthropic/claude-sonnet-4-6',
+      model: 'anthropic/claude-sonnet-4.6',
       system_prompt: `You are the Outline publisher. The actual POST happens outside this step — your job is to emit a publish manifest the downstream job consumer will read. Return ONLY a fenced \`\`\`json block matching this shape (no commentary, no markdown around it):
 
 {

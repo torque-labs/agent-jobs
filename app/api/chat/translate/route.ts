@@ -19,7 +19,7 @@ A Job has these fields:
 
 Each Step has:
 - name: string (unique within the job, snake_case)
-- model: string — use "anthropic/claude-sonnet-4-6" for most steps (it has access to Torque + Supabase MCP tools in-process); you can pick any OpenRouter model id for steps that don't need tools
+- model: string — use "anthropic/claude-sonnet-4.6" for most steps (it has access to Torque + Supabase MCP tools in-process); you can pick any OpenRouter model id for steps that don't need tools
 - system_prompt: string (instructions to the agent for this step)
 - user_template: string — the actual prompt for this step. Reference prior step outputs with {{steps.<step_name>.output}}
 - tools_allowed: null  (always null for v1 — model decides)

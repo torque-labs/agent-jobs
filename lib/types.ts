@@ -1,6 +1,6 @@
 export type StepDefinition = {
   name: string;                   // unique within job
-  model: string;                  // e.g. "anthropic/claude-sonnet-4-6" or "hermes-agent" for Hermes-routed (gets MCP tools)
+  model: string;                  // e.g. "anthropic/claude-sonnet-4.6" or "hermes-agent" for Hermes-routed (gets MCP tools)
   system_prompt: string;
   user_template: string;          // can reference prior step outputs: "{{steps.fetcher.output}}"
   tools_allowed: string[] | null; // null = all available on the model; only relevant for Hermes-routed steps
@@ -44,7 +44,7 @@ export type Run = {
 };
 
 export type ModelCatalogEntry = {
-  id: string;       // canonical model identifier (e.g. "anthropic/claude-sonnet-4-6")
+  id: string;       // canonical model identifier (e.g. "anthropic/claude-sonnet-4.6")
   name: string;     // display label
   provider: string; // "openrouter" | "hermes" etc.
 };

@@ -32,7 +32,7 @@ function blankStep(): DraftStep {
   return {
     _key: crypto.randomUUID(),
     name: "",
-    model: "anthropic/claude-sonnet-4-6",
+    model: "anthropic/claude-sonnet-4.6",
     system_prompt: "",
     user_template: "",
     tools_allowed: null,
