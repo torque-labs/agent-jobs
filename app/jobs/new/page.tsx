@@ -75,7 +75,9 @@ export default function NewJobPage() {
     }
     setSubmitting(true);
     try {
-      const body: Omit<Job, "id" | "created_at" | "updated_at"> = {
+      // Use the API's create-schema shape rather than Omit<Job>: trigger_*
+      // fields are managed server-side and not part of the user form.
+      const body = {
         name: name.trim(),
         description: description.trim(),
         cron: cron.trim() === "" ? null : cron.trim(),

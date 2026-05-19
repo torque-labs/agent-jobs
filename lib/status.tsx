@@ -10,7 +10,11 @@ export type RunStatus =
 export function StatusBadge({ status }: { status: RunStatus | string }) {
   switch (status) {
     case "queued":
-      return <Badge variant="secondary">queued</Badge>;
+      return (
+        <Badge className="animate-pulse" variant="secondary">
+          queued
+        </Badge>
+      );
     case "running":
       return (
         <Badge className="animate-pulse" variant="default">

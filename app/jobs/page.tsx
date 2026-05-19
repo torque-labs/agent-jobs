@@ -12,6 +12,7 @@ import {
 import { serverFetch } from "@/lib/server-fetch";
 import type { Job, Run } from "@/lib/types";
 import { StatusBadge } from "@/lib/status";
+import { LivePollWrapper } from "@/components/live-poll-wrapper";
 import { JobRowActions } from "./job-row-actions";
 
 type JobWithLastRun = Job & { last_run?: Run | null };
@@ -27,8 +28,14 @@ async function getJobs(): Promise<JobWithLastRun[]> {
 
 export default async function JobsPage() {
   const jobs = await getJobs();
+  // Auto-refresh when any job has a running/queued last_run so the user sees
+  // status updates without manually reloading.
+  const hasLiveRun = jobs.some(
+    (j) => j.last_run && (j.last_run.status === "running" || j.last_run.status === "queued"),
+  );
 
   return (
+    <LivePollWrapper isActive={hasLiveRun}>
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
@@ -114,5 +121,6 @@ export default async function JobsPage() {
         </Table>
       </div>
     </div>
+    </LivePollWrapper>
   );
 }

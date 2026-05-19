@@ -1,6 +1,7 @@
 import { schedule, validate, type ScheduledTask } from 'node-cron';
 import { getJob, listJobs } from './db';
 import { executeJob } from './orchestrator';
+import { sweepWebhookDeliveries } from './webhook-delivery';
 import type { Job } from './types';
 
 /**
@@ -40,6 +41,44 @@ export async function initCron(): Promise<void> {
     }
   }
   console.log(`[cron] initCron: registered ${registered}, skipped ${skipped}`);
+
+  // Workstream D — webhook delivery sweeper. Runs every 30s on a separate
+  // registry slot so an operator can't accidentally unregister it via a Job
+  // edit (the namespace key is reserved with the `__system:` prefix).
+  registerWebhookSweeper();
+}
+
+const WEBHOOK_SWEEPER_KEY = '__system:webhook-sweeper';
+
+function registerWebhookSweeper(): void {
+  // Replace any prior handle (idempotent across reloads).
+  const existing = REGISTRY.get(WEBHOOK_SWEEPER_KEY);
+  if (existing) {
+    try {
+      existing.stop();
+    } catch (err) {
+      console.error('[cron] error stopping prior webhook sweeper:', err);
+    }
+    REGISTRY.delete(WEBHOOK_SWEEPER_KEY);
+  }
+
+  try {
+    const task = schedule(
+      '*/30 * * * * *',
+      async () => {
+        try {
+          await sweepWebhookDeliveries();
+        } catch (err) {
+          console.error('[cron] webhook sweeper tick failed:', err);
+        }
+      },
+      { name: WEBHOOK_SWEEPER_KEY, noOverlap: true },
+    );
+    REGISTRY.set(WEBHOOK_SWEEPER_KEY, task);
+    console.log('[cron] webhook sweeper registered (*/30s)');
+  } catch (err) {
+    console.error('[cron] failed to register webhook sweeper:', err);
+  }
 }
 
 /**

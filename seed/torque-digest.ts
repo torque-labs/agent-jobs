@@ -88,6 +88,12 @@ Day N: compute as (compare-date - 2026-05-12).days + 1, where 2026-05-12 is epoc
       tools_allowed: [],
       retries: 1,
       timeout_seconds: 900,
+      // Workstream G — feed prior digests' feedback into the compose prompt so
+      // the model learns from corrections ("verify wallet balances", "tighten
+      // recommendation language", etc.) across daily runs.
+      use_feedback: true,
+      // Workstream H — operator must approve the digest text before publish.
+      approval_required: true,
     },
     {
       name: 'publish',

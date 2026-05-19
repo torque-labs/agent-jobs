@@ -26,6 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { LivePollWrapper } from "@/components/live-poll-wrapper";
 import { JobDetailActions } from "./job-detail-actions";
 
 async function getJob(id: string): Promise<Job | null> {
@@ -66,7 +67,12 @@ export default async function JobDetailPage({
   const [job, runs] = await Promise.all([getJob(id), getRuns(id)]);
   if (!job) notFound();
 
+  const hasLiveRun = runs.some(
+    (r) => r.status === "running" || r.status === "queued",
+  );
+
   return (
+    <LivePollWrapper isActive={hasLiveRun}>
     <div className="mx-auto flex max-w-4xl flex-col gap-6">
       <div className="flex items-start justify-between gap-4">
         <div>
@@ -236,5 +242,6 @@ export default async function JobDetailPage({
         </TabsContent>
       </Tabs>
     </div>
+    </LivePollWrapper>
   );
 }

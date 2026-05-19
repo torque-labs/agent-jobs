@@ -7,21 +7,35 @@ import type {
 import {
   createRun,
   getJob,
+  getRun,
   setRunError,
   setRunFinalOutput,
   updateRunStatus,
   updateStepRun,
 } from './db';
+import { requestApproval } from './approval';
+import { emit } from './events';
+import { listFeedbackForJob, renderFeedbackPromptSection } from './feedback';
 import { selectClient } from './hermes';
 import { callTool, findToolByExposedName, listAllTools, type McpToolDef } from './mcp';
-import { referencedSteps, substitute } from './templating';
-import type { Run, StepDefinition, StepRun } from './types';
+import { parseOutlineManifest, postManifest } from './outline';
+import { referencedSteps, substitute, type TriggerContext } from './templating';
+import type { Job, Run, StepDefinition, StepRun } from './types';
 
 const MAX_TOOL_LOOP_ITERATIONS = 25;
 const DEFAULT_TIMEOUT_SECONDS = 600;
 const DEFAULT_RETRIES = 1;
 
 type StepContext = Record<string, { output: string | null }>;
+
+export type ExecuteJobOptions = {
+  /** Optional run id (so HTTP routes can mint the id before kickoff). */
+  presetRunId?: string;
+  /** Trigger context for runs invoked via /api/v1/triggers/[token]. */
+  triggerBody?: unknown;
+  triggerRawBody?: string;
+  triggerHeaders?: Record<string, string>;
+};
 
 /**
  * Run a job end-to-end: load it, persist a Run row, execute each step in
@@ -32,9 +46,24 @@ type StepContext = Record<string, { output: string | null }>;
  */
 export async function executeJob(
   jobId: string,
-  triggeredBy: 'cron' | 'manual' | 'chat',
+  triggeredBy: 'cron' | 'manual' | 'chat' | 'trigger',
+  presetRunIdOrOpts?: string | ExecuteJobOptions,
 ): Promise<Run> {
-  const runId = randomUUID();
+  // Back-compat: accept either a bare runId string (existing callers) or a
+  // full options bag (new trigger path).
+  const opts: ExecuteJobOptions = typeof presetRunIdOrOpts === 'string'
+    ? { presetRunId: presetRunIdOrOpts }
+    : (presetRunIdOrOpts ?? {});
+  const runId = opts.presetRunId ?? randomUUID();
+  const triggerCtx: TriggerContext | undefined = opts.triggerHeaders !== undefined ||
+    opts.triggerBody !== undefined ||
+    opts.triggerRawBody !== undefined
+    ? {
+        body: opts.triggerBody ?? null,
+        rawBody: opts.triggerRawBody ?? '',
+        headers: opts.triggerHeaders ?? {},
+      }
+    : undefined;
   let run: Run;
 
   try {
@@ -64,6 +93,13 @@ export async function executeJob(
       step_runs: initialStepRuns,
     });
 
+    safeEmit('run.started', {
+      run_id: runId,
+      job_id: jobId,
+      triggered_by: triggeredBy,
+      started_at: run.started_at,
+    });
+
     const seenNames = new Set<string>();
     for (const step of job.steps) {
       const refs = referencedSteps(step.user_template);
@@ -84,29 +120,70 @@ export async function executeJob(
     }
 
     const ctx: StepContext = {};
-    let lastOutput: string | null = null;
-
-    for (const step of job.steps) {
-      const result = await executeStepWithRetries(runId, step, ctx);
-      if (result.ok === false) {
-        await setRunError(runId, result.error);
-        const failed = await updateRunStatus(runId, 'failed', { ended_at: new Date() });
-        return failed ?? run;
-      }
-      ctx[step.name] = { output: result.output };
-      lastOutput = result.output;
+    const stepResult = await runStepsFrom(job, runId, 0, ctx, triggerCtx);
+    if (stepResult.kind === 'cancelled') return stepResult.run;
+    if (stepResult.kind === 'awaiting_approval') return stepResult.run ?? run;
+    if (stepResult.kind === 'failed') {
+      const failedRun = stepResult.run ?? run;
+      safeEmit('run.failed', {
+        run_id: runId,
+        job_id: jobId,
+        error: failedRun.error,
+        ended_at: failedRun.ended_at,
+      });
+      return failedRun;
     }
 
-    if (lastOutput !== null) {
-      await setRunFinalOutput(runId, lastOutput);
+    // Final cancellation gate — if cancelled after last step but before we
+    // flipped to done, honour the cancel.
+    const finalCheck = await getRun(runId).catch(() => null);
+    if (finalCheck?.status === 'cancelled') {
+      return finalCheck;
+    }
+
+    // Auto-publish: if the last step output matches an Outline publish
+    // manifest, POST it and replace the final_output with a friendly link.
+    let finalOutput = stepResult.lastOutput;
+    if (finalOutput !== null) {
+      const manifest = parseOutlineManifest(finalOutput);
+      if (manifest) {
+        try {
+          const url = await postManifest(manifest);
+          finalOutput = `✅ ${manifest.title} → ${url}`;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[orchestrator] Outline publish failed for run ${runId}:`, msg);
+          // Stash the publish error on run.error but don't fail the run; the
+          // manifest text stays in final_output so the operator can retry.
+          try {
+            await setRunError(runId, `Outline publish failed: ${msg}`);
+          } catch {
+            // best-effort
+          }
+        }
+      }
+      await setRunFinalOutput(runId, finalOutput);
     }
     const done = await updateRunStatus(runId, 'done', { ended_at: new Date() });
-    return done ?? run;
+    const finalRun = done ?? run;
+    safeEmit('run.completed', {
+      run_id: runId,
+      job_id: jobId,
+      final_output: finalOutput,
+      ended_at: finalRun.ended_at,
+    });
+    return finalRun;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     try {
       await setRunError(runId, msg);
       const failed = await updateRunStatus(runId, 'failed', { ended_at: new Date() });
+      safeEmit('run.failed', {
+        run_id: runId,
+        job_id: jobId,
+        error: msg,
+        ended_at: failed?.ended_at ?? new Date(),
+      });
       if (failed) return failed;
     } catch {
       // DB unavailable too — fall through to synthetic return.
@@ -121,16 +198,218 @@ export async function executeJob(
       step_runs: [],
       final_output: null,
       error: msg,
+      pending_approval: null,
       created_at: new Date(),
     };
   }
+}
+
+/**
+ * Fire-and-forget wrapper around `emit` — webhook delivery failures must NOT
+ * abort a run. Logs any escape.
+ */
+function safeEmit(event: Parameters<typeof emit>[0], payload: unknown): void {
+  void emit(event, payload).catch((err) => {
+    console.error(`[orchestrator] emit(${event}) failed:`, err);
+  });
+}
+
+/**
+ * Resume a run that was paused by the approval gate. Loads the run, finds the
+ * step index that paused (the step recorded in pending_approval), rebuilds
+ * `ctx` from already-completed step_runs (so the edited approved output is
+ * picked up because `approveRun` wrote it back to the step row), and runs the
+ * remaining steps via the shared `runStepsFrom` driver.
+ *
+ * Returns the final Run. Never throws — same contract as executeJob.
+ */
+export async function resumeJob(runId: string): Promise<Run | null> {
+  let current: Run | null = null;
+  try {
+    current = await getRun(runId);
+    if (!current) return null;
+
+    const job = await getJob(current.job_id);
+    if (!job) {
+      await setRunError(runId, `Job ${current.job_id} not found at resume`);
+      return updateRunStatus(runId, 'failed', { ended_at: new Date() });
+    }
+
+    // Find the step that was paused. Approve already cleared
+    // pending_approval and flipped status back to 'running', so we rely on
+    // step_runs to identify the resume point: the LAST step with status='done'
+    // is the gate step, and we resume from the index AFTER it.
+    const completedStepNames = new Set(
+      current.step_runs.filter((sr) => sr.status === 'done').map((sr) => sr.step_name),
+    );
+    let resumeFrom = 0;
+    for (let i = 0; i < job.steps.length; i++) {
+      if (completedStepNames.has(job.steps[i].name)) {
+        resumeFrom = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    // Rebuild ctx from the already-completed step outputs. The approve path
+    // wrote the (possibly edited) approved output back to the step_run row,
+    // so this naturally picks up the edit.
+    const ctx: StepContext = {};
+    for (const sr of current.step_runs) {
+      if (sr.status === 'done') {
+        ctx[sr.step_name] = { output: sr.output };
+      }
+    }
+
+    if (resumeFrom >= job.steps.length) {
+      // Nothing left — treat as done. Use last completed step output.
+      const lastDone = [...current.step_runs].reverse().find((sr) => sr.status === 'done');
+      if (lastDone?.output != null) {
+        await setRunFinalOutput(runId, lastDone.output);
+      }
+      return updateRunStatus(runId, 'done', { ended_at: new Date() });
+    }
+
+    const result = await runStepsFrom(job, runId, resumeFrom, ctx);
+    if (result.kind === 'cancelled') return result.run;
+    if (result.kind === 'awaiting_approval') return result.run;
+    if (result.kind === 'failed') return result.run ?? current;
+
+    if (result.lastOutput !== null) {
+      await setRunFinalOutput(runId, result.lastOutput);
+    }
+    return updateRunStatus(runId, 'done', { ended_at: new Date() });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    try {
+      await setRunError(runId, msg);
+      return updateRunStatus(runId, 'failed', { ended_at: new Date() });
+    } catch {
+      return current;
+    }
+  }
+}
+
+type StepLoopResult =
+  | { kind: 'ok'; lastOutput: string | null }
+  | { kind: 'cancelled'; run: Run }
+  | { kind: 'awaiting_approval'; run: Run | null }
+  | { kind: 'failed'; run: Run | null };
+
+/**
+ * Shared driver for the orchestrator's step loop. Used by both `executeJob`
+ * (starts at index 0) and `resumeJob` (starts after the approval gate). The
+ * caller owns the run-row lifecycle (createRun, final status flip, etc.); we
+ * just iterate steps and surface a terminal/pause signal.
+ */
+async function runStepsFrom(
+  job: Job,
+  runId: string,
+  startIndex: number,
+  ctx: StepContext,
+  triggerCtx?: TriggerContext,
+): Promise<StepLoopResult> {
+  let lastOutput: string | null = null;
+
+  // Materialize prior feedback once per run; cheap query but no need to repeat
+  // it for every step that has use_feedback.
+  let cachedFeedbackSection: string | null = null;
+  const getFeedbackSection = async (): Promise<string> => {
+    if (cachedFeedbackSection !== null) return cachedFeedbackSection;
+    try {
+      const items = await listFeedbackForJob(job.id, 5);
+      cachedFeedbackSection = renderFeedbackPromptSection(items);
+    } catch (err) {
+      console.error(`[orchestrator] failed to load feedback for job ${job.id}:`, err);
+      cachedFeedbackSection = '';
+    }
+    return cachedFeedbackSection;
+  };
+
+  for (let i = startIndex; i < job.steps.length; i++) {
+    const step = job.steps[i];
+
+    // Cooperative cancellation: re-check the run row before each step. If a
+    // caller hit /api/v1/runs/:id/cancel between steps we stop here without
+    // starting the next model call.
+    const fresh = await getRun(runId).catch(() => null);
+    if (fresh?.status === 'cancelled') {
+      return { kind: 'cancelled', run: fresh };
+    }
+
+    // Workstream G — optionally prepend prior-feedback section to system prompt.
+    let effectiveStep = step;
+    if (step.use_feedback) {
+      const fb = await getFeedbackSection();
+      if (fb.length > 0) {
+        effectiveStep = {
+          ...step,
+          system_prompt: `${fb}\n\n${step.system_prompt}`,
+        };
+      }
+    }
+
+    const result = await executeStepWithRetries(runId, effectiveStep, ctx, triggerCtx);
+    if (result.ok === false) {
+      // If a cancel landed during the step, prefer the cancelled state over
+      // surfacing the (often-spurious) abort error.
+      const after = await getRun(runId).catch(() => null);
+      if (after?.status === 'cancelled') return { kind: 'cancelled', run: after };
+      await setRunError(runId, result.error);
+      const failed = await updateRunStatus(runId, 'failed', { ended_at: new Date() });
+      return { kind: 'failed', run: failed };
+    }
+    ctx[step.name] = { output: result.output };
+    lastOutput = result.output;
+
+    safeEmit('step.completed', {
+      run_id: runId,
+      job_id: job.id,
+      step_name: step.name,
+      status: 'done',
+      tokens: result.tokens ?? null,
+      ended_at: new Date().toISOString(),
+    });
+
+    // Workstream H — pause for approval before running any subsequent step.
+    if (step.approval_required) {
+      const paused = await requestApproval(runId, step.name, result.output);
+      return { kind: 'awaiting_approval', run: paused };
+    }
+  }
+
+  return { kind: 'ok', lastOutput };
+}
+
+/**
+ * Mint a runId synchronously, kick off `executeJob` in the background using
+ * that id, and return the id. Used by HTTP routes that want to redirect the
+ * user to `/runs/:id` before the orchestrator's first model call lands.
+ *
+ * Caller is responsible for verifying the job exists before calling this
+ * (so they can return 404 instead of creating a doomed runId).
+ */
+export function startJobRun(
+  jobId: string,
+  triggeredBy: 'cron' | 'manual' | 'chat' | 'trigger',
+  opts?: Omit<ExecuteJobOptions, 'presetRunId'>,
+): string {
+  const runId = randomUUID();
+  void executeJob(jobId, triggeredBy, { presetRunId: runId, ...(opts ?? {}) }).catch((err) => {
+    console.error(`[orchestrator] background executeJob(${jobId}, ${runId}) escaped:`, err);
+  });
+  return runId;
 }
 
 async function executeStepWithRetries(
   runId: string,
   step: StepDefinition,
   ctx: StepContext,
-): Promise<{ ok: true; output: string } | { ok: false; error: string }> {
+  triggerCtx?: TriggerContext,
+): Promise<
+  | { ok: true; output: string; tokens: { in: number; out: number } }
+  | { ok: false; error: string }
+> {
   const retries = step.retries ?? DEFAULT_RETRIES;
   let lastError = '';
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -142,7 +421,7 @@ async function executeStepWithRetries(
         started_at: startedAtIso,
         error: null,
       });
-      const { output, tokensIn, tokensOut } = await runSingleStep(step, ctx);
+      const { output, tokensIn, tokensOut } = await runSingleStep(step, ctx, triggerCtx);
       await updateStepRun(runId, step.name, {
         status: 'done',
         output,
@@ -151,7 +430,7 @@ async function executeStepWithRetries(
         error: null,
       });
       didPersistTerminal = true;
-      return { ok: true, output };
+      return { ok: true, output, tokens: { in: tokensIn, out: tokensOut } };
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
       if (attempt === retries) {
@@ -192,8 +471,9 @@ async function executeStepWithRetries(
 async function runSingleStep(
   step: StepDefinition,
   ctx: StepContext,
+  triggerCtx?: TriggerContext,
 ): Promise<{ output: string; tokensIn: number; tokensOut: number }> {
-  const userContent = substitute(step.user_template, { steps: ctx });
+  const userContent = substitute(step.user_template, { steps: ctx, trigger: triggerCtx });
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: step.system_prompt },
     { role: 'user', content: userContent },
@@ -345,7 +625,7 @@ function extractText(content: unknown): string {
 async function safeCreateFailedRun(
   runId: string,
   jobId: string,
-  triggeredBy: 'cron' | 'manual' | 'chat',
+  triggeredBy: 'cron' | 'manual' | 'chat' | 'trigger',
   error: string,
 ): Promise<Run> {
   try {
@@ -371,6 +651,7 @@ async function safeCreateFailedRun(
       step_runs: [],
       final_output: null,
       error,
+      pending_approval: null,
       created_at: new Date(),
     };
   }

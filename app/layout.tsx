@@ -23,6 +23,7 @@ const NAV_ITEMS = [
   { href: "/jobs", label: "Jobs" },
   { href: "/kanban", label: "Kanban" },
   { href: "/chat", label: "Chat" },
+  { href: "/settings/keys", label: "Settings" },
 ];
 
 export default function RootLayout({
