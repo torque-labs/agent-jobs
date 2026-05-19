@@ -16,6 +16,7 @@ import { parse } from 'node:url';
 import next from 'next';
 import { createJob, initSchema, listJobs } from './lib/db';
 import { initCron } from './lib/cron';
+import { initMcp, shutdownMcp } from './lib/mcp';
 import { TRUMP_DIGEST_JOB } from './seed/torque-digest';
 
 const port = Number(process.env.PORT ?? 3000);
@@ -33,7 +34,17 @@ async function main() {
     process.exit(1);
   }
 
-  // 2. Seed default jobs if the jobs table is empty. Non-fatal: a seed
+  // 2. Spawn MCP subprocesses (torque, supabase) so tool steps can drive them.
+  //    Non-fatal: individual server start failures schedule retries; the HTTP
+  //    server still comes up so operators can debug via the UI.
+  try {
+    await initMcp();
+    console.log('[server] mcp initialized');
+  } catch (err) {
+    console.error('[server] initMcp failed (continuing without MCP):', err);
+  }
+
+  // 3. Seed default jobs if the jobs table is empty. Non-fatal: a seed
   //    failure (e.g. a constraint we didn't anticipate) shouldn't keep the
   //    server from booting — operators can always seed manually via the UI.
   try {
@@ -42,7 +53,7 @@ async function main() {
     console.error('[server] seedIfEmpty failed (continuing without seed):', err);
   }
 
-  // 3. Register cron schedules. Failures are logged but non-fatal — HTTP
+  // 4. Register cron schedules. Failures are logged but non-fatal — HTTP
   //    should still serve so the operator can fix bad cron strings via the UI.
   try {
     await initCron();
@@ -50,7 +61,7 @@ async function main() {
     console.error('[server] initCron failed (continuing without scheduler):', err);
   }
 
-  // 4. Start Next.
+  // 5. Start Next.
   const app = next({ dev, hostname, port });
   const handle = app.getRequestHandler();
   await app.prepare();
@@ -74,10 +85,15 @@ async function main() {
     console.log(`[server] ready on http://${hostname}:${port}`);
   });
 
-  // Graceful shutdown so cron + DB pool drain cleanly.
+  // Graceful shutdown so cron + DB pool + MCP subprocesses drain cleanly.
+  let shuttingDown = false;
   const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[server] ${signal} — shutting down`);
-    server.close(() => process.exit(0));
+    server.close(() => {
+      shutdownMcp().finally(() => process.exit(0));
+    });
     // Hard exit if close hangs.
     setTimeout(() => process.exit(1), 10_000).unref();
   };

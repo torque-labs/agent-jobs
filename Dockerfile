@@ -40,7 +40,8 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 # Coolify's container-level healthcheck shells out to curl, which
 # alpine doesn't include by default.
-RUN apk add --no-cache curl && npm install -g pnpm@9.15.4
+RUN apk add --no-cache curl && npm install -g pnpm@9.15.4 \
+    && npm install -g @torque-labs/mcp @supabase/mcp-server-supabase
 
 # Production deps + Next build output + compiled server.
 COPY --from=deps    /app/node_modules    ./node_modules
