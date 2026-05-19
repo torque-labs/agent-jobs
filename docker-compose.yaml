@@ -29,7 +29,6 @@ services:
       - "3000"
     networks:
       - default
-      - hermes
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/healthcheck"]
       interval: 30s
@@ -39,6 +38,3 @@ services:
 
 networks:
   default:
-  hermes:
-    external: true
-    name: cookw4kwo0gw0gock8wgwgwk
