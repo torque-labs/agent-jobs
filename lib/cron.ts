@@ -1,0 +1,125 @@
+import { schedule, validate, type ScheduledTask } from 'node-cron';
+import { getJob, listJobs } from './db';
+import { executeJob } from './orchestrator';
+import type { Job } from './types';
+
+/**
+ * In-process registry of active cron handles, keyed by job id. This is
+ * process-local — if you run multiple Node instances, each one will hold its
+ * own schedule (and each will fire). For v1 we run a single custom server
+ * process, so that's fine.
+ */
+const REGISTRY = new Map<string, ScheduledTask>();
+
+/**
+ * Called once during boot from `server.ts`. Loads all jobs from the DB and
+ * registers a cron handle for each one that's enabled and has a cron string.
+ * Safe to call multiple times — re-registers (stops + starts) cleanly.
+ */
+export async function initCron(): Promise<void> {
+  let jobs: Job[];
+  try {
+    jobs = await listJobs();
+  } catch (err) {
+    console.error('[cron] initCron: failed to load jobs from DB:', err);
+    return;
+  }
+
+  let registered = 0;
+  let skipped = 0;
+  for (const job of jobs) {
+    if (!job.enabled || !job.cron) {
+      skipped++;
+      continue;
+    }
+    try {
+      registerCronForJob(job);
+      registered++;
+    } catch (err) {
+      console.error(`[cron] failed to register job ${job.id} (${job.name}):`, err);
+    }
+  }
+  console.log(`[cron] initCron: registered ${registered}, skipped ${skipped}`);
+}
+
+/**
+ * Schedule (or re-schedule) a single job. If a handle already exists for this
+ * id it is stopped and replaced. If the cron expression is invalid we log and
+ * skip — we never throw, so a bad cron string can't take down the server.
+ */
+export function registerCronForJob(job: Job): void {
+  // Always unregister first so we never leak handles.
+  unregisterCron(job.id);
+
+  if (!job.enabled) {
+    return;
+  }
+  if (!job.cron) {
+    return;
+  }
+
+  if (!validate(job.cron)) {
+    console.error(`[cron] job ${job.id} (${job.name}) has invalid cron expression: ${job.cron}`);
+    return;
+  }
+
+  let task: ScheduledTask;
+  try {
+    task = schedule(
+      job.cron,
+      async () => {
+        try {
+          await executeJob(job.id, 'cron');
+        } catch (err) {
+          // executeJob is supposed to be no-throw, but belt-and-suspenders:
+          // a thrown error inside a cron tick must NEVER crash the process.
+          console.error(`[cron] job ${job.id} tick threw:`, err);
+        }
+      },
+      { name: `job:${job.id}`, noOverlap: true },
+    );
+  } catch (err) {
+    console.error(`[cron] schedule() threw for job ${job.id}:`, err);
+    return;
+  }
+
+  REGISTRY.set(job.id, task);
+}
+
+/**
+ * Re-fetch the job row from the DB and re-register its cron handle. Called by
+ * the PATCH route so schedule changes take effect immediately. If the job has
+ * been deleted (returns null), we just unregister.
+ */
+export async function reloadCronForJob(id: string): Promise<void> {
+  try {
+    const job = await getJob(id);
+    if (!job) {
+      unregisterCron(id);
+      return;
+    }
+    registerCronForJob(job);
+  } catch (err) {
+    console.error(`[cron] reloadCronForJob(${id}) failed:`, err);
+  }
+}
+
+/**
+ * Stop and remove the cron handle for a job, if any. No-op if not registered.
+ */
+export function unregisterCron(id: string): void {
+  const existing = REGISTRY.get(id);
+  if (!existing) return;
+  try {
+    const stopResult = existing.stop();
+    // stop() may return a Promise; let it run to completion in background.
+    if (stopResult && typeof (stopResult as Promise<void>).catch === 'function') {
+      (stopResult as Promise<void>).catch((err) => {
+        console.error(`[cron] error stopping job ${id}:`, err);
+      });
+    }
+  } catch (err) {
+    console.error(`[cron] error stopping job ${id}:`, err);
+  }
+  REGISTRY.delete(id);
+}

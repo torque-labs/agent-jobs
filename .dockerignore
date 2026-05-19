@@ -1,0 +1,46 @@
+# Build artifacts and caches
+node_modules
+.next
+out
+build
+dist
+*.tsbuildinfo
+
+# VCS / IDE
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Local data
+data/
+*.sqlite
+*.sqlite-journal
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Vercel / deploy metadata
+.vercel
+
+# Test / coverage
+coverage
+
+# Docs / misc
+README.md
+LICENSE
+Dockerfile
+.dockerignore
+
+# Host paths (never include the developer's homedir if context root drifts)
+/Users
