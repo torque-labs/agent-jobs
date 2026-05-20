@@ -25,6 +25,13 @@ services:
       - OUTLINE_AGENTS_COLLECTION_ID=${OUTLINE_AGENTS_COLLECTION_ID}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - APP_PASSWORD=${APP_PASSWORD}
+      # Auth fallback toggle — keep on while Supabase OAuth is being wired.
+      - ALLOW_BASIC_AUTH=${ALLOW_BASIC_AUTH:-true}
+      # Supabase (Google @torque.so OAuth). Optional — proxy.ts falls back to
+      # basic auth when these are empty. See README "Supabase setup".
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL:-}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY:-}
       - TORQUE_API_KEY=${TORQUE_API_KEY}
       - TORQUE_API_TOKEN=${TORQUE_API_TOKEN}
       - SUPABASE_ACCESS_TOKEN=${SUPABASE_ACCESS_TOKEN}

@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/table";
 import { LivePollWrapper } from "@/components/live-poll-wrapper";
 import { JobDetailActions } from "./job-detail-actions";
+import { TriggerSection } from "./trigger-section";
 
 async function getJob(id: string): Promise<Job | null> {
   try {
@@ -146,6 +147,12 @@ export default async function JobDetailPage({
               </div>
             </CardContent>
           </Card>
+
+          <TriggerSection
+            jobId={job.id}
+            token={job.trigger_token ?? null}
+            enabled={job.trigger_enabled ?? false}
+          />
 
           <Card>
             <CardHeader>
