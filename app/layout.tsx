@@ -48,7 +48,7 @@ export default function RootLayout({
                 Agent Jobs
               </span>
             </div>
-            <nav className="flex flex-col gap-1 p-3">
+            <nav className="flex h-[calc(100vh-3.5rem)] flex-col gap-1 p-3">
               {NAV_ITEMS.map((item) => (
                 <Link
                   key={item.href}
@@ -58,6 +58,14 @@ export default function RootLayout({
                   {item.label}
                 </Link>
               ))}
+              <form action="/auth/signout" method="post" className="mt-auto">
+                <button
+                  type="submit"
+                  className="w-full rounded-md px-3 py-2 text-left text-sm font-medium text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                >
+                  Sign out
+                </button>
+              </form>
             </nav>
           </aside>
           <main className="flex-1 overflow-x-hidden p-8">{children}</main>
