@@ -14,8 +14,13 @@ export async function signInWithGoogle(formData: FormData): Promise<void> {
   }
 
   const h = await headers();
-  const host = h.get('host') ?? 'localhost:3000';
-  const protocol = host.startsWith('localhost') ? 'http' : 'https';
+  // Traefik proxies the request; the bare `host` header is the internal
+  // container hostname (0.0.0.0:3000). The public host comes through
+  // `x-forwarded-host`.
+  const host = h.get('x-forwarded-host') ?? h.get('host') ?? 'localhost:3000';
+  const protocol =
+    h.get('x-forwarded-proto') ??
+    (host.startsWith('localhost') || host.startsWith('0.0.0.0') ? 'http' : 'https');
   const origin = `${protocol}://${host}`;
 
   const { data, error } = await supabase.auth.signInWithOAuth({

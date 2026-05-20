@@ -7,9 +7,20 @@ export const runtime = 'nodejs';
 const ALLOWED_DOMAIN = 'torque.so';
 
 export async function GET(request: NextRequest) {
-  const { searchParams, origin } = new URL(request.url);
+  const { searchParams } = new URL(request.url);
   const code = searchParams.get('code');
   const next = searchParams.get('next') ?? '/';
+
+  // Build the PUBLIC origin from x-forwarded-* headers; `request.url`'s
+  // origin is the internal container address (0.0.0.0:3000) behind Traefik.
+  const host =
+    request.headers.get('x-forwarded-host') ??
+    request.headers.get('host') ??
+    new URL(request.url).host;
+  const protocol =
+    request.headers.get('x-forwarded-proto') ??
+    (host.startsWith('localhost') || host.startsWith('0.0.0.0') ? 'http' : 'https');
+  const origin = `${protocol}://${host}`;
 
   if (!code) {
     return NextResponse.redirect(`${origin}/login?error=oauth`);
