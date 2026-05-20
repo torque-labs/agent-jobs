@@ -3,6 +3,11 @@ import type { ModelCatalogEntry } from './types';
 // Catalog of OpenRouter model IDs. Every entry has been validated against
 // https://openrouter.ai/api/v1/models — see scripts/validate-models.ts.
 export const MODELS: ModelCatalogEntry[] = [
+  // Autonomous backend — Hermes Agent runs its own multi-turn tool loop
+  // (browser, terminal, code-exec, delegation, Torque/Supabase MCPs). Pick
+  // this for loosely-specified tasks; pick a model below for direct calls.
+  { id: 'hermes-agent', name: 'Hermes Agent (autonomous — all tools + MCPs)', provider: 'hermes' },
+
   { id: 'anthropic/claude-opus-4.7', name: 'Claude Opus 4.7 (max reasoning)', provider: 'openrouter' },
   { id: 'anthropic/claude-opus-4.7-fast', name: 'Claude Opus 4.7 Fast', provider: 'openrouter' },
   { id: 'anthropic/claude-opus-4.6', name: 'Claude Opus 4.6', provider: 'openrouter' },

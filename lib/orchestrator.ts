@@ -16,7 +16,7 @@ import {
 import { requestApproval } from './approval';
 import { emit } from './events';
 import { listFeedbackForJob, renderFeedbackPromptSection } from './feedback';
-import { selectClient } from './hermes';
+import { isHermesModel, runHermesResponse, selectClient } from './hermes';
 import { callTool, findToolByExposedName, listAllTools, type McpToolDef } from './mcp';
 import { parseOutlineManifest, postManifest } from './outline';
 import { referencedSteps, substitute, type TriggerContext } from './templating';
@@ -474,13 +474,25 @@ async function runSingleStep(
   triggerCtx?: TriggerContext,
 ): Promise<{ output: string; tokensIn: number; tokensOut: number }> {
   const userContent = substitute(step.user_template, { steps: ctx, trigger: triggerCtx });
+  const timeoutMs = (step.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
+
+  // Backend choice: 'hermes-agent' runs the full Hermes autonomous loop
+  // (Hermes owns tool dispatch). Any other model id goes to OpenRouter with
+  // our in-process MCP tool loop below.
+  if (isHermesModel(step.model)) {
+    return callWithTimeout(
+      runHermesResponse(step.system_prompt, userContent, timeoutMs),
+      timeoutMs,
+      `step "${step.name}" (hermes) timed out after ${step.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS}s`,
+    );
+  }
+
   const messages: ChatCompletionMessageParam[] = [
     { role: 'system', content: step.system_prompt },
     { role: 'user', content: userContent },
   ];
 
   const client = selectClient(step.model);
-  const timeoutMs = (step.timeout_seconds ?? DEFAULT_TIMEOUT_SECONDS) * 1000;
 
   const tools = buildToolList(step.tools_allowed);
   const toolsParam: ChatCompletionTool[] | undefined = tools.length > 0
