@@ -104,7 +104,7 @@ export async function runTenantTurn(
   }
 
   // --- Isolation boundary: scoped Torque MCP subprocess, per turn. ---
-  const session = await openTenantTorqueSession(tenant.torque_mcp_token);
+  const session = await openTenantTorqueSession(tenant.torque_mcp_token, tenant.torque_project_id);
   const toolsUsed: string[] = [];
   try {
     const systemPrompt = buildSystemPrompt(tenant, ctx);

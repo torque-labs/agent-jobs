@@ -341,6 +341,7 @@ export type TenantTorqueSession = {
  */
 export async function openTenantTorqueSession(
   torqueToken: string,
+  activeProjectId?: string,
 ): Promise<TenantTorqueSession> {
   if (!torqueToken) throw new Error('openTenantTorqueSession: torqueToken is required');
 
@@ -385,6 +386,20 @@ export async function openTenantTorqueSession(
       console.error('[mcp] tenant Torque session cleanup after startup failure:', closeErr);
     }
     throw err;
+  }
+
+  // Pin the tenant's project as active. The Torque MCP gates every data tool
+  // behind an active project ("No active project set" otherwise), so a scoped
+  // single-project tenant must have it set before the model runs. We do this
+  // here, runtime-internal — `set_active_project` is deliberately NOT in the
+  // read-only allow-list, so it never enters the model's schema and the model
+  // can't switch projects. The token only administers this one project anyway.
+  if (activeProjectId) {
+    try {
+      await client.callTool({ name: 'set_active_project', arguments: { projectId: activeProjectId } });
+    } catch (pinErr) {
+      console.error('[mcp] failed to pin active project for tenant session:', pinErr);
+    }
   }
 
   let closed = false;
