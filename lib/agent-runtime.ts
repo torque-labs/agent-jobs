@@ -39,6 +39,7 @@ import {
 import { fetchLeaderboard } from './torque-api';
 import { getTenant } from './tenants';
 import { recordUsage } from './tenant-usage';
+import { loadHistory, saveMessages } from './conversation';
 import type { Tenant } from './types';
 
 const MAX_TOOL_LOOP_ITERATIONS = 25;
@@ -59,6 +60,12 @@ export type ConversationContext = {
   history?: ConversationMessage[];
   /** Display name of the speaker, surfaced to the model for light personalization. */
   speaker?: string;
+  /**
+   * When true, the runtime LOADS prior turns for `conversationId` from the
+   * conversation store (instead of `history`) and PERSISTS this exchange after
+   * the turn. Channel handlers set this; routines / UI test turns leave it off.
+   */
+  persist?: boolean;
 };
 
 export type TenantTurnResult = {
@@ -221,9 +228,13 @@ export async function runTenantTurn(
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
     ];
-    // Replay scoped history (memory_namespace keeps this per-tenant + per-convo;
-    // the channel layer is responsible for loading/persisting `history`).
-    for (const m of ctx.history ?? []) {
+    // Replay scoped history. When ctx.persist is set we load it from the
+    // conversation store for this (tenant, conversationId); otherwise we use
+    // any history the caller passed. memory_namespace keeps it per-tenant.
+    const priorHistory = ctx.persist
+      ? await loadHistory(tenant.id, ctx.conversationId).catch(() => [])
+      : (ctx.history ?? []);
+    for (const m of priorHistory) {
       messages.push({ role: m.role, content: m.content });
     }
     const userPrefix = ctx.speaker ? `${ctx.speaker}: ` : '';
@@ -356,6 +367,20 @@ export async function runTenantTurn(
       console.error(
         `[agent-runtime] recordUsage failed for ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
       );
+    }
+
+    // Persist this exchange to conversation memory (best-effort).
+    if (ctx.persist) {
+      try {
+        await saveMessages(tenant.id, ctx.conversationId, [
+          { role: 'user', content: userMessage },
+          { role: 'assistant', content: finalText },
+        ]);
+      } catch (err) {
+        console.error(
+          `[agent-runtime] saveMessages failed for ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
+        );
+      }
     }
 
     return {

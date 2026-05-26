@@ -64,8 +64,7 @@ export async function POST(req: Request) {
       runTenantTurn(tenant.id, text, {
         conversationId: `telegram:${chatId}`,
         speaker: message?.from?.first_name,
-        // TODO: per-namespace history store. Stateless single-turn for now.
-        history: [],
+        persist: true,
       }),
     );
     await sendTelegramMessage(botToken, tenant.slug, chatId, result.reply);

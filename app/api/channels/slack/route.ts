@@ -81,9 +81,11 @@ export async function POST(req: Request) {
 async function handleSlackTurn(tenant: Tenant, event: SlackMessageEvent): Promise<void> {
   try {
     const result = await runTenantTurn(tenant.id, event.text!, {
-      conversationId: `slack:${event.channel}:${event.thread_ts ?? event.ts ?? ''}`,
+      // Memory key: channel (+ thread when threaded) so it's stable across
+      // messages. The reply still posts in-thread via thread_ts/ts below.
+      conversationId: `slack:${event.channel}${event.thread_ts ? ':' + event.thread_ts : ''}`,
       speaker: event.user,
-      history: [],
+      persist: true,
     });
     await postSlackMessage(tenant, event.channel!, result.reply, event.thread_ts ?? event.ts);
   } catch (err) {

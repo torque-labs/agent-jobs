@@ -85,9 +85,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
       runTenantTurn(tenant.id, text, {
         conversationId: `telegram:${chatId}`,
         speaker: message?.from?.first_name,
-        // TODO: load prior turns for this conversation from a per-namespace
-        // history store. Stateless single-turn for the foundation pass.
-        history: [],
+        persist: true,
       }),
     );
     await sendTelegramMessage(tenant, chatId, result.reply);

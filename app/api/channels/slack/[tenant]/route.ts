@@ -104,10 +104,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
 async function handleSlackTurn(tenant: Tenant, event: SlackMessageEvent): Promise<void> {
   try {
     const result = await runTenantTurn(tenant.id, event.text!, {
-      conversationId: `slack:${event.channel}:${event.thread_ts ?? event.ts ?? ''}`,
+      conversationId: `slack:${event.channel}${event.thread_ts ? ':' + event.thread_ts : ''}`,
       speaker: event.user,
-      // TODO: hydrate thread history from a per-namespace store.
-      history: [],
+      persist: true,
     });
     await postSlackMessage(tenant, event.channel!, result.reply, event.thread_ts ?? event.ts);
   } catch (err) {
