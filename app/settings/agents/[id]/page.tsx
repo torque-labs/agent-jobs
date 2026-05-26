@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { getTenant, toPublicTenant } from '@/lib/tenants';
+import { getUsageSummary } from '@/lib/tenant-usage';
 import {
   AgentControls,
   ChannelEnrollment,
@@ -17,6 +18,8 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
   if (!tenant) notFound();
   const t = toPublicTenant(tenant);
   const ingester = (t.data_sources ?? []).some((d) => d.type === 'ingester');
+  const usage = await getUsageSummary(t.id).catch(() => ({ turns: 0, tokens_in: 0, tokens_out: 0, cost_usd: 0 }));
+  const fmtUsd = (n: number) => (n === 0 ? '$0.00' : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`);
 
   return (
     <div className="flex flex-col gap-6">
@@ -48,6 +51,31 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
         <p className="mt-3 text-[11px] text-muted-foreground">
           The scoped Torque token is the isolation boundary and can&rsquo;t be edited here —
           to change the project or token, delete and recreate.
+        </p>
+      </section>
+
+      <section className="rounded-lg border p-4">
+        <h3 className="mb-3 text-sm font-semibold">Usage (all-time, estimated)</h3>
+        <dl className="grid grid-cols-4 gap-4 text-sm">
+          <div>
+            <dt className="text-xs text-muted-foreground">Turns</dt>
+            <dd className="font-mono">{usage.turns.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Tokens in</dt>
+            <dd className="font-mono">{usage.tokens_in.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Tokens out</dt>
+            <dd className="font-mono">{usage.tokens_out.toLocaleString()}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Est. cost</dt>
+            <dd className="font-mono">{fmtUsd(usage.cost_usd)}</dd>
+          </div>
+        </dl>
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Estimated from per-model pricing (lib/models.ts) × recorded token counts.
         </p>
       </section>
 

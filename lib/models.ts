@@ -65,3 +65,37 @@ export const MODELS: ModelCatalogEntry[] = [
 export function getAllModels(): ModelCatalogEntry[] {
   return MODELS;
 }
+
+
+// Approximate USD price per 1,000,000 tokens (input / output) for cost
+// ESTIMATES. These drift when providers change pricing — update as needed.
+// Unknown models fall back to DEFAULT_PRICE. Cost is computed + stored at write
+// time (lib/tenant-usage.ts), so historical rows keep the price they were
+// recorded at.
+export type ModelPrice = { in: number; out: number };
+const DEFAULT_PRICE: ModelPrice = { in: 1, out: 3 };
+export const MODEL_PRICING: Record<string, ModelPrice> = {
+  'anthropic/claude-opus-4.7': { in: 15, out: 75 },
+  'anthropic/claude-opus-4.7-fast': { in: 15, out: 75 },
+  'anthropic/claude-opus-4.6': { in: 15, out: 75 },
+  'anthropic/claude-sonnet-4.6': { in: 3, out: 15 },
+  'anthropic/claude-sonnet-4.5': { in: 3, out: 15 },
+  'anthropic/claude-haiku-4.5': { in: 1, out: 5 },
+  'anthropic/claude-3.5-haiku': { in: 0.8, out: 4 },
+  'openai/gpt-4o': { in: 2.5, out: 10 },
+  'openai/gpt-4o-mini': { in: 0.15, out: 0.6 },
+  'openai/o1': { in: 15, out: 60 },
+  'openai/o1-pro': { in: 150, out: 600 },
+  'openai/o3-mini': { in: 1.1, out: 4.4 },
+  'google/gemini-2.5-pro': { in: 1.25, out: 10 },
+  'google/gemini-2.5-flash': { in: 0.3, out: 2.5 },
+  'google/gemini-2.0-flash-001': { in: 0.1, out: 0.4 },
+  'deepseek/deepseek-chat': { in: 0.27, out: 1.1 },
+  'deepseek/deepseek-r1': { in: 0.55, out: 2.19 },
+};
+
+/** Estimated USD cost for a turn given token counts. */
+export function estimateCostUsd(model: string, tokensIn: number, tokensOut: number): number {
+  const p = MODEL_PRICING[model] ?? DEFAULT_PRICE;
+  return (tokensIn / 1_000_000) * p.in + (tokensOut / 1_000_000) * p.out;
+}

@@ -8,6 +8,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { getAllModels } from '@/lib/models';
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -18,6 +26,7 @@ import {
 } from '@/components/ui/dialog';
 
 const DEFAULT_MODEL = 'anthropic/claude-sonnet-4.6';
+const MODELS = getAllModels().filter((m) => m.provider === 'openrouter');
 
 export function CreateAgentDialog() {
   const router = useRouter();
@@ -155,13 +164,18 @@ export function CreateAgentDialog() {
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="a-model">Model</Label>
-            <Input
-              id="a-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              disabled={submitting}
-              className="font-mono text-xs"
-            />
+            <Select value={model} onValueChange={setModel} disabled={submitting}>
+              <SelectTrigger id="a-model" className="w-full">
+                <SelectValue placeholder="Select a model" />
+              </SelectTrigger>
+              <SelectContent>
+                {MODELS.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="a-soul">Soul / system prompt</Label>

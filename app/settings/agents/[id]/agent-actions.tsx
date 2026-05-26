@@ -9,6 +9,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { getAllModels } from '@/lib/models';
+import {
   Dialog,
   DialogClose,
   DialogContent,
@@ -20,6 +28,8 @@ import {
 } from '@/components/ui/dialog';
 
 type Status = 'active' | 'paused' | 'disabled';
+
+const MODELS = getAllModels().filter((m) => m.provider === 'openrouter');
 
 async function patchAgent(id: string, body: unknown): Promise<boolean> {
   const res = await fetch(`/api/internal/agents/${id}`, {
@@ -80,13 +90,18 @@ export function AgentControls({
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-2">
             <Label htmlFor="e-model">Model</Label>
-            <Input
-              id="e-model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="font-mono text-xs"
-              disabled={saving}
-            />
+            <Select value={model} onValueChange={setModel} disabled={saving}>
+              <SelectTrigger id="e-model" className="w-full">
+                <SelectValue placeholder="Select a model" />
+              </SelectTrigger>
+              <SelectContent>
+                {MODELS.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="flex flex-col gap-2">
             <Label htmlFor="e-status">Status</Label>

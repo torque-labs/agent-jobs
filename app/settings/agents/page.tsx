@@ -9,6 +9,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { listTenants, toPublicTenant } from '@/lib/tenants';
+import { getUsageSummaries, type UsageSummary } from '@/lib/tenant-usage';
 import type { PublicTenant } from '@/lib/types';
 import { CreateAgentDialog } from './create-agent-dialog';
 
@@ -43,8 +44,14 @@ function channelSummary(t: PublicTenant): string {
   return parts.length ? parts.join(' · ') : '—';
 }
 
+function fmtUsd(n: number): string {
+  if (n === 0) return '$0.00';
+  return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}
+
 export default async function AgentsPage() {
   const agents = await loadAgents();
+  const usage: Record<string, UsageSummary> = await getUsageSummaries().catch(() => ({}));
 
   return (
     <div className="flex flex-col gap-4">
@@ -75,6 +82,7 @@ export default async function AgentsPage() {
                 <TableHead>Channels</TableHead>
                 <TableHead>Data</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Est. cost</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -96,6 +104,9 @@ export default async function AgentsPage() {
                   </TableCell>
                   <TableCell>
                     <Badge variant={statusVariant(a.status)}>{a.status}</Badge>
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-xs">
+                    {fmtUsd(usage[a.id]?.cost_usd ?? 0)}
                   </TableCell>
                 </TableRow>
               ))}

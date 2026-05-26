@@ -38,6 +38,7 @@ import {
 } from './mcp';
 import { fetchLeaderboard } from './torque-api';
 import { getTenant } from './tenants';
+import { recordUsage } from './tenant-usage';
 import type { Tenant } from './types';
 
 const MAX_TOOL_LOOP_ITERATIONS = 25;
@@ -346,6 +347,15 @@ export async function runTenantTurn(
 
     if (finalText === null) {
       finalText = 'I ran out of steps working on that. Could you rephrase or narrow the question?';
+    }
+
+    // Best-effort token/cost accounting — never fail the turn on a write error.
+    try {
+      await recordUsage(tenant.id, tenant.model, tokensIn, tokensOut);
+    } catch (err) {
+      console.error(
+        `[agent-runtime] recordUsage failed for ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
+      );
     }
 
     return {
