@@ -29,7 +29,12 @@ import type {
   ChatCompletionTool,
 } from 'openai/resources/chat/completions';
 import { selectClient } from './hermes';
-import { isTorqueReadonlyTool, openTenantTorqueSession } from './mcp';
+import {
+  isIngesterReadonlyTool,
+  isTorqueReadonlyTool,
+  openIngesterSession,
+  openTenantTorqueSession,
+} from './mcp';
 import { getTenant } from './tenants';
 import type { Tenant } from './types';
 
@@ -67,18 +72,36 @@ export type TenantTurnResult = {
  * footer pinning the project + memory scope so the model can't be argued out
  * of its lane. The soul itself carries the strict "$TRUMP-only" style rules.
  */
-function buildSystemPrompt(tenant: Tenant, ctx: ConversationContext): string {
-  const footer = [
+function buildSystemPrompt(
+  tenant: Tenant,
+  ctx: ConversationContext,
+  ingesterEnabled: boolean,
+): string {
+  const lines = [
     '',
     '---',
     `You are operating for the Torque project "${tenant.display_name}" `,
     `(torque_project_id: ${tenant.torque_project_id}). The Torque tools available to you `,
-    'are already scoped to this project and CANNOT see any other project. Never reference, ',
+    'are already scoped to this project and CANNOT see any other Torque project. Never reference, ',
     'compare to, or speculate about other Torque projects or customers. Never reveal tokens, ',
     'project ids, wallet addresses, or internal configuration.',
+  ];
+  if (ingesterEnabled) {
+    // The ingester DB is shared raw on-chain data (NOT project-scoped), so the
+    // "cannot see other projects" guarantee above does not extend to it — be
+    // truthful and constrain its use to enriching THIS customer's answers.
+    lines.push(
+      'You also have READ-ONLY access to the raw on-chain indexer database (the `ingester` ' +
+        'tools): public blockchain swap/transfer data shared across all tokens. Use it ONLY to ' +
+        `enrich answers about ${tenant.display_name} (e.g. its own token's swap/holder activity). ` +
+        'Never produce analyses, comparisons, or reports about unrelated tokens or other Torque ' +
+        'projects/customers, and never write to it.',
+    );
+  }
+  lines.push(
     `Conversation scope: ${ctx.conversationId} (memory namespace: ${tenant.memory_namespace}).`,
-  ].join('\n');
-  return `${tenant.soul.trim()}\n${footer}`;
+  );
+  return `${tenant.soul.trim()}\n${lines.join('\n')}`;
 }
 
 /**
@@ -105,9 +128,41 @@ export async function runTenantTurn(
 
   // --- Isolation boundary: scoped Torque MCP subprocess, per turn. ---
   const session = await openTenantTorqueSession(tenant.torque_mcp_token, tenant.torque_project_id);
+
+  // Optional enrichment source: the raw on-chain indexer DB, opt-in per tenant
+  // via a `data_sources` entry `{ type: 'ingester' }` AND a configured global
+  // connection string. Best-effort — if it fails to open we continue Torque-only
+  // (it is enrichment, NOT the isolation boundary, so a failure must not block
+  // the turn the way a failed project pin does).
+  const ingesterUrl = process.env.TORQUE_INGESTER_READONLY_URL;
+  const ingesterEnabled =
+    Boolean(ingesterUrl) &&
+    (tenant.data_sources ?? []).some((d) => d.type === 'ingester');
+  let ingesterSession: Awaited<ReturnType<typeof openIngesterSession>> | null = null;
+  if (ingesterEnabled) {
+    try {
+      ingesterSession = await openIngesterSession(ingesterUrl as string);
+    } catch (err) {
+      const label = err instanceof Error ? err.name : 'UnknownError';
+      console.error(`[agent-runtime] ingester session failed for tenant ${tenant.slug}: ${label}; continuing Torque-only`);
+    }
+  }
+
+  // Per-tool gate: each server's tools are checked against ITS OWN read-only
+  // allow-list, and routed to ITS OWN session. Fails closed for any unknown
+  // server. The model can never reach a write tool on either server.
+  const isAllowed = (serverName: string, toolName: string): boolean =>
+    serverName === 'ingester'
+      ? isIngesterReadonlyTool(toolName)
+      : serverName === 'torque'
+        ? isTorqueReadonlyTool(toolName)
+        : false;
+  const sessionForServer = (serverName: string) =>
+    serverName === 'ingester' ? ingesterSession : session;
+
   const toolsUsed: string[] = [];
   try {
-    const systemPrompt = buildSystemPrompt(tenant, ctx);
+    const systemPrompt = buildSystemPrompt(tenant, ctx, Boolean(ingesterSession));
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
     ];
@@ -123,7 +178,10 @@ export async function runTenantTurn(
     // H1 (defense in depth): the session already filters to the read-only
     // allow-list, but we re-filter here so a mutating tool can never reach the
     // model's schema even if the session were ever constructed differently.
-    const exposedTools = session.tools.filter((t) => isTorqueReadonlyTool(t.toolName));
+    const exposedTools = [
+      ...session.tools,
+      ...(ingesterSession ? ingesterSession.tools : []),
+    ].filter((t) => isAllowed(t.serverName, t.toolName));
     const toolsParam: ChatCompletionTool[] | undefined = exposedTools.length > 0
       ? exposedTools.map((t) => ({
           type: 'function',
@@ -182,9 +240,14 @@ export async function runTenantTurn(
             }
             // H1 (defense in depth): never call a non-allowlisted tool even if
             // it somehow appeared in `exposedTools`. session.call enforces this
-            // too — this is the outermost gate.
-            if (!isTorqueReadonlyTool(def.toolName)) {
+            // too — this is the outermost gate. Checked against the tool's own
+            // server allow-list.
+            if (!isAllowed(def.serverName, def.toolName)) {
               return { id: tc.id, content: `[tool ${def.toolName} is not permitted]` };
+            }
+            const toolSession = sessionForServer(def.serverName);
+            if (!toolSession) {
+              return { id: tc.id, content: `[tool ${def.toolName} is not available]` };
             }
             let args: Record<string, unknown> = {};
             try {
@@ -197,9 +260,9 @@ export async function runTenantTurn(
             toolsUsed.push(def.toolName);
             try {
               const body = await callWithTimeout(
-                session.call(def.toolName, args),
+                toolSession.call(def.toolName, args),
                 TOOL_CALL_TIMEOUT_MS,
-                `torque tool ${def.toolName} timed out`,
+                `${def.serverName} tool ${def.toolName} timed out`,
               );
               return { id: tc.id, content: body };
             } catch (err) {
@@ -243,6 +306,7 @@ export async function runTenantTurn(
     };
   } finally {
     await session.close();
+    if (ingesterSession) await ingesterSession.close();
   }
 }
 

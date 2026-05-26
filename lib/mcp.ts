@@ -98,6 +98,37 @@ export function isTorqueReadonlyTool(toolName: string): boolean {
   return TORQUE_READONLY_TOOLS.has(toolName);
 }
 
+// ---------------------------------------------------------------------------
+// Ingester (raw on-chain indexer DB) READ-ONLY allow-list.
+//
+// Opt-in per tenant via a `data_sources` entry `{ type: 'ingester' }`. The
+// connection string is a SHARED, global secret (env `TORQUE_INGESTER_READONLY_URL`,
+// a read-only `mcp_read` DB user) — it is NOT per-project scoped, so this is
+// only appropriate for data the customer is allowed to see at the row level
+// (raw on-chain swaps = public blockchain data). The `mcp-postgres` server
+// ships write tools (alter/create/insert/update/delete) — excluded here so the
+// model's schema stays read-only even though the DB user is read-only too
+// (defense in depth, fail-closed: a new tool must be added explicitly).
+const MCP_POSTGRES_PKG = 'mcp-postgres@1.3.0';
+export const TORQUE_INGESTER_READONLY_TOOLS: ReadonlySet<string> = new Set([
+  'query_data',
+  'execute_raw_query',
+  'list_tables',
+  'describe_table',
+  'get_schema',
+  'count_rows',
+  'get_table_sample',
+  'table_exists',
+  'column_exists',
+  'get_relationships',
+  'get_connection_status',
+  'check_certificate_cache',
+]);
+
+export function isIngesterReadonlyTool(toolName: string): boolean {
+  return TORQUE_INGESTER_READONLY_TOOLS.has(toolName);
+}
+
 // OpenRouter caps tool names to 64 chars and disallows certain chars.
 const SAFE_NAME = /[^a-zA-Z0-9_-]/g;
 function makeExposedName(serverName: string, toolName: string): string {
@@ -432,6 +463,79 @@ export async function openTenantTorqueSession(
         await transport.close();
       } catch (err) {
         console.error('[mcp] tenant Torque session close error:', err);
+      }
+    },
+  };
+}
+
+/**
+ * Open an ephemeral read-only session against the Torque INGESTER database
+ * (raw on-chain indexer). Mirrors openTenantTorqueSession's lifecycle but:
+ *  - spawns `mcp-postgres` with a SHARED, read-only `DATABASE_URL` (not a
+ *    per-tenant credential — the ingester holds public on-chain data);
+ *  - filters the toolset to the ingester read-only allow-list, enforced again
+ *    in `call` (fail-closed); no write/DDL tool ever enters the schema.
+ * There is no project pin: the ingester is not project-aware. Persona scoping
+ * (stay on this customer's token) is enforced by the system prompt.
+ */
+export async function openIngesterSession(databaseUrl: string): Promise<TenantTorqueSession> {
+  if (!databaseUrl) throw new Error('openIngesterSession: databaseUrl is required');
+
+  const transport = new StdioClientTransport({
+    command: 'npx',
+    args: ['-y', MCP_POSTGRES_PKG],
+    env: {
+      ...getDefaultEnvironment(),
+      DATABASE_URL: databaseUrl,
+    },
+    stderr: 'inherit',
+  });
+
+  const client = new Client(
+    { name: 'agent-jobs-ingester', version: '0.1.0' },
+    { capabilities: {} },
+  );
+
+  let tools: McpToolDef[];
+  try {
+    await client.connect(transport);
+    const listed = await client.listTools();
+    tools = (listed.tools ?? [])
+      .filter((t) => isIngesterReadonlyTool(t.name))
+      .map((t) => ({
+        serverName: 'ingester',
+        toolName: t.name,
+        exposedName: makeExposedName('ingester', t.name),
+        description: typeof t.description === 'string' ? t.description : '',
+        inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} },
+      }));
+  } catch (err) {
+    try {
+      await transport.close();
+    } catch (closeErr) {
+      console.error('[mcp] ingester session cleanup after startup failure:', closeErr);
+    }
+    throw err;
+  }
+
+  let closed = false;
+  return {
+    tools,
+    call: async (toolName, args) => {
+      if (closed) throw new Error('ingester session already closed');
+      if (!isIngesterReadonlyTool(toolName)) {
+        throw new Error(`tool ${toolName} is not permitted (ingester read-only allow-list)`);
+      }
+      const result = await client.callTool({ name: toolName, arguments: args });
+      return normalizeToolResult(result);
+    },
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      try {
+        await transport.close();
+      } catch (err) {
+        console.error('[mcp] ingester session close error:', err);
       }
     },
   };
