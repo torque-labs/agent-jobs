@@ -20,6 +20,7 @@ export const metadata: Metadata = {
 };
 
 const NAV_ITEMS = [
+  { href: "/agents", label: "Agents" },
   { href: "/jobs", label: "Jobs" },
   { href: "/kanban", label: "Kanban" },
   { href: "/chat", label: "Chat" },

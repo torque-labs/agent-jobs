@@ -3,7 +3,6 @@ import Link from 'next/link';
 const TABS = [
   { href: '/settings/keys', label: 'API Keys' },
   { href: '/settings/webhooks', label: 'Webhooks' },
-  { href: '/settings/agents', label: 'Agents' },
 ];
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
@@ -12,7 +11,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
       <div>
         <h1 className="font-heading text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Manage API keys, integration credentials, and customer agents.
+          Manage API keys and integration credentials.
         </p>
       </div>
       <nav className="flex gap-1 border-b">
