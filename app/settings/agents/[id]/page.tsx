@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation';
 import { Badge } from '@/components/ui/badge';
 import { getTenant, toPublicTenant } from '@/lib/tenants';
 import { getUsageSummary } from '@/lib/tenant-usage';
+import { listRoutinesForTenant } from '@/lib/tenant-routines';
+import { RoutinesSection, type RoutineView } from './routines';
 import {
   AgentControls,
   ChannelEnrollment,
@@ -20,6 +22,15 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
   const ingester = (t.data_sources ?? []).some((d) => d.type === 'ingester');
   const usage = await getUsageSummary(t.id).catch(() => ({ turns: 0, tokens_in: 0, tokens_out: 0, cost_usd: 0 }));
   const fmtUsd = (n: number) => (n === 0 ? '$0.00' : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`);
+  const routines: RoutineView[] = (await listRoutinesForTenant(t.id).catch(() => [])).map((r) => ({
+    id: r.id,
+    name: r.name,
+    cron: r.cron,
+    channel: r.channel,
+    enabled: r.enabled,
+    last_run_at: r.last_run_at ? new Date(r.last_run_at).toISOString() : null,
+    last_status: r.last_status,
+  }));
 
   return (
     <div className="flex flex-col gap-6">
@@ -92,6 +103,8 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
         telegramChats={t.channels.telegram?.allowed_chats ?? []}
         slackChannels={t.channels.slack?.allowed_channels ?? []}
       />
+
+      <RoutinesSection id={t.id} initial={routines} />
 
       <TestChat id={t.id} />
 

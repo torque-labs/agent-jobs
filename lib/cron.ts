@@ -2,6 +2,8 @@ import { schedule, validate, type ScheduledTask } from 'node-cron';
 import { getJob, listJobs } from './db';
 import { executeJob } from './orchestrator';
 import { sweepWebhookDeliveries } from './webhook-delivery';
+import { runRoutine } from './routine-runner';
+import { getRoutine, listEnabledRoutines, type Routine } from './tenant-routines';
 import type { Job } from './types';
 
 /**
@@ -41,6 +43,23 @@ export async function initCron(): Promise<void> {
     }
   }
   console.log(`[cron] initCron: registered ${registered}, skipped ${skipped}`);
+
+  // Per-agent scheduled routines (cron interpreted in UTC).
+  try {
+    const routines = await listEnabledRoutines();
+    let rreg = 0;
+    for (const r of routines) {
+      try {
+        registerCronForRoutine(r);
+        rreg++;
+      } catch (err) {
+        console.error(`[cron] failed to register routine ${r.id} (${r.name}):`, err);
+      }
+    }
+    console.log(`[cron] initCron: registered ${rreg} routine(s)`);
+  } catch (err) {
+    console.error('[cron] initCron: failed to load routines from DB:', err);
+  }
 
   // Workstream D — webhook delivery sweeper. Runs every 30s on a separate
   // registry slot so an operator can't accidentally unregister it via a Job
@@ -140,6 +159,55 @@ export async function reloadCronForJob(id: string): Promise<void> {
     registerCronForJob(job);
   } catch (err) {
     console.error(`[cron] reloadCronForJob(${id}) failed:`, err);
+  }
+}
+
+/**
+ * Schedule (or re-schedule) a per-agent routine. Cron is interpreted in UTC.
+ * Keyed under `routine:<id>` so it never collides with a job handle. Invalid
+ * cron is logged + skipped, never thrown.
+ */
+export function registerCronForRoutine(routine: Routine): void {
+  const key = `routine:${routine.id}`;
+  unregisterCron(key);
+
+  if (!routine.enabled) return;
+  if (!validate(routine.cron)) {
+    console.error(`[cron] routine ${routine.id} (${routine.name}) has invalid cron: ${routine.cron}`);
+    return;
+  }
+
+  let task: ScheduledTask;
+  try {
+    task = schedule(
+      routine.cron,
+      async () => {
+        try {
+          await runRoutine(routine.id);
+        } catch (err) {
+          console.error(`[cron] routine ${routine.id} tick threw:`, err);
+        }
+      },
+      { name: key, noOverlap: true, timezone: 'UTC' },
+    );
+  } catch (err) {
+    console.error(`[cron] schedule() threw for routine ${routine.id}:`, err);
+    return;
+  }
+  REGISTRY.set(key, task);
+}
+
+/** Re-fetch a routine and re-register its cron handle (called by the API). */
+export async function reloadCronForRoutine(id: string): Promise<void> {
+  try {
+    const routine = await getRoutine(id);
+    if (!routine) {
+      unregisterCron(`routine:${id}`);
+      return;
+    }
+    registerCronForRoutine(routine);
+  } catch (err) {
+    console.error(`[cron] reloadCronForRoutine(${id}) failed:`, err);
   }
 }
 
