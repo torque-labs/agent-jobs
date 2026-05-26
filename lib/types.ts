@@ -109,3 +109,86 @@ export type ApiKey = {
   last_used_at: Date | null;
   revoked_at: Date | null;
 };
+
+// ---------------------------------------------------------------------------
+// Multi-tenant Hermes customer-agent runtime.
+//
+// Each tenant is one Torque customer with a private conversational agent. The
+// isolation boundary is `torque_mcp_token`: a scoped Torque MCP JWT minted from
+// a wallet that administers ONLY that customer's project, so the agent can only
+// ever read that one project's data. See lib/agent-runtime.ts.
+// ---------------------------------------------------------------------------
+
+/** Per-channel config. Bot tokens / signing secrets are secrets. */
+export type TenantChannels = {
+  telegram?: {
+    bot_token: string;
+    /** Telegram chat ids allowed to talk to this tenant's bot. */
+    allowed_chats: string[];
+    /**
+     * Secret token echoed by Telegram in X-Telegram-Bot-Api-Secret-Token.
+     * REQUIRED for an enabled channel (C1) — the route fails closed without it.
+     */
+    webhook_secret: string;
+    /**
+     * Opt out of the allow-list and accept ANY chat (M2). Must be set
+     * explicitly; an empty allowed_chats does NOT imply allow-all.
+     */
+    allow_all?: boolean;
+  };
+  slack?: {
+    bot_token: string;
+    /** REQUIRED for an enabled channel (C1) — the route fails closed without it. */
+    signing_secret: string;
+    /** Slack channel ids allowed to talk to this tenant's app. */
+    allowed_channels: string[];
+    /**
+     * Opt out of the allow-list and accept ANY channel (M2). Must be set
+     * explicitly; an empty allowed_channels does NOT imply allow-all.
+     */
+    allow_all?: boolean;
+  };
+};
+
+/** Optional extra knowledge sources beyond Torque (docs, FAQ urls, etc.). */
+export type TenantDataSource = {
+  type: string;
+  label?: string;
+  value: string;
+};
+
+export type Tenant = {
+  id: string;
+  slug: string;
+  display_name: string;
+  torque_project_id: string;
+  torque_wallet_pubkey: string;
+  // Secrets — never serialized to API responses (see lib/tenants.ts redaction).
+  torque_mcp_token: string;
+  torque_ingest_key: string | null;
+  model: string;
+  provider: string;
+  soul: string;                 // SOUL.md persona / system prompt
+  channels: TenantChannels;
+  memory_namespace: string;
+  data_sources: TenantDataSource[] | null;
+  status: 'active' | 'paused' | 'disabled';
+  owner: string | null;
+  created_at: Date;
+  updated_at: Date;
+};
+
+/** Tenant with all secret fields stripped — safe to return over the API. */
+export type PublicTenant = Omit<
+  Tenant,
+  'torque_mcp_token' | 'torque_ingest_key' | 'channels'
+> & {
+  channels: PublicTenantChannels;
+  has_torque_ingest_key: boolean;
+};
+
+/** Channel config with bot tokens / signing secrets redacted. */
+export type PublicTenantChannels = {
+  telegram?: { allowed_chats: string[]; configured: boolean };
+  slack?: { allowed_channels: string[]; configured: boolean };
+};

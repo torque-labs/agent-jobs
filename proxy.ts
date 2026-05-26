@@ -26,6 +26,10 @@ const PUBLIC_PREFIXES = [
   '/api/healthcheck',
   // Workstream E — inbound job triggers: the path token IS the credential.
   '/api/v1/triggers/',
+  // Multi-tenant Hermes — channel webhooks. Authenticity is the per-tenant
+  // Telegram secret token / Slack signing secret verified inside each route,
+  // so these must bypass the session/basic-auth layers.
+  '/api/channels/',
 ];
 
 function jsonError(message: string, status: number): NextResponse {
