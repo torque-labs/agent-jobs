@@ -341,3 +341,24 @@ export async function getTenantForSlack(slug: string): Promise<Tenant | null> {
   if (!t || !t.channels.slack?.bot_token) return null;
   return t;
 }
+
+/**
+ * Shared-app routing: resolve the tenant that owns a Slack channel id. Slack
+ * channel ids are globally unique, so (like the Telegram chat id) the channel
+ * is the routing key — enrolled in exactly one tenant's
+ * channels.slack.allowed_channels. Fails closed: no match → null; ambiguous
+ * (channel in >1 tenant) → null + log. allow_all is ignored for shared routing.
+ */
+export async function getTenantBySlackChannel(channelId: string): Promise<Tenant | null> {
+  await ensureTenantSchema();
+  const rows = await sql<TenantRow[]>`SELECT * FROM tenants WHERE status = 'active'`;
+  const matches = rows
+    .map(mapRow)
+    .filter((t) => (t.channels.slack?.allowed_channels ?? []).includes(channelId));
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    console.error(`[tenants] slack channel ${channelId} maps to ${matches.length} tenants; refusing (ambiguous)`);
+    return null;
+  }
+  return matches[0];
+}
