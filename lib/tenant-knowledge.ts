@@ -101,32 +101,33 @@ export async function deleteEntry(id: string): Promise<boolean> {
 }
 
 /**
- * Ranked full-text search over a tenant's KB, with an ILIKE fallback when FTS
- * finds nothing. Returns a compact text block for the model (`search_knowledge`).
+ * Search a tenant's KB by term overlap and return a compact text block for the
+ * model (`search_knowledge`). We score each entry by how many distinct query
+ * terms (3+ chars) it contains and return the top matches — robust for
+ * natural-language questions on a small per-tenant KB. (FTS / embeddings are
+ * the upgrade path once a tenant has many entries.)
  */
 export async function searchKnowledge(tenantId: string, query: string, limit = 5): Promise<string> {
   await ensureKnowledgeSchema();
-  const q = query.trim();
-  if (!q) return 'No query provided.';
+  const terms = [...new Set((query.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []))];
+  if (terms.length === 0) return 'No query provided.';
 
-  let rows = await sql<{ title: string; content: string }[]>`
-    SELECT title, content
-    FROM tenant_knowledge
-    WHERE tenant_id = ${tenantId}
-      AND to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content,'')) @@ plainto_tsquery('english', ${q})
-    ORDER BY ts_rank(to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content,'')), plainto_tsquery('english', ${q})) DESC
-    LIMIT ${limit}
+  // Bounded fetch — fine for the current scale (few entries per tenant).
+  const rows = await sql<{ title: string; content: string }[]>`
+    SELECT title, content FROM tenant_knowledge WHERE tenant_id = ${tenantId} LIMIT 200
   `;
-  if (rows.length === 0) {
-    const like = `%${q}%`;
-    rows = await sql<{ title: string; content: string }[]>`
-      SELECT title, content FROM tenant_knowledge
-      WHERE tenant_id = ${tenantId} AND (title ILIKE ${like} OR content ILIKE ${like})
-      ORDER BY updated_at DESC LIMIT ${limit}
-    `;
-  }
-  if (rows.length === 0) return 'No matching knowledge base entries.';
-  return rows
-    .map((r) => `## ${r.title}\n${r.content.slice(0, 2000)}`)
+  const scored = rows
+    .map((r) => {
+      const hay = `${r.title} ${r.content}`.toLowerCase();
+      const score = terms.reduce((n, t) => (hay.includes(t) ? n + 1 : n), 0);
+      return { r, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  if (scored.length === 0) return 'No matching knowledge base entries.';
+  return scored
+    .map((x) => `## ${x.r.title}\n${x.r.content.slice(0, 2000)}`)
     .join('\n\n---\n\n');
 }
