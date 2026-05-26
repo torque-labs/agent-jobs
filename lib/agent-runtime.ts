@@ -34,7 +34,9 @@ import {
   isTorqueReadonlyTool,
   openIngesterSession,
   openTenantTorqueSession,
+  type McpToolDef,
 } from './mcp';
+import { fetchLeaderboard } from './torque-api';
 import { getTenant } from './tenants';
 import type { Tenant } from './types';
 
@@ -66,6 +68,56 @@ export type TenantTurnResult = {
   toolsUsed: string[];
   memoryNamespace: string;
 };
+
+// ---------------------------------------------------------------------------
+// Built-in (non-MCP) tools — implemented in-process against the Torque server
+// REST API with the tenant's scoped token. Used where the MCP tool is broken;
+// currently get_leaderboard (see lib/torque-api.ts). Gated like the MCP tools:
+// an explicit allow-list, checked at schema-build and at call time.
+const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set(['get_leaderboard']);
+function isBuiltinTool(toolName: string): boolean {
+  return BUILTIN_TOOL_NAMES.has(toolName);
+}
+const BUILTIN_TOOLS: McpToolDef[] = [
+  {
+    serverName: 'builtin',
+    toolName: 'get_leaderboard',
+    exposedName: 'get_leaderboard',
+    description:
+      "Get the live leaderboard rankings for one of this project's recurring incentives. " +
+      'First call list_recurring_incentives to find the recurringOfferId, then pass it here. ' +
+      'Returns the top-ranked wallets with username, score, days held, and balance. Use this ' +
+      'for any leaderboard/standings question (do NOT use get_epoch_leaderboard).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        recurringOfferId: {
+          type: 'string',
+          description: 'The recurring incentive id (from list_recurring_incentives).',
+        },
+        limit: { type: 'number', description: 'How many top rows (default 50, max 200).' },
+      },
+      required: ['recurringOfferId'],
+    },
+  },
+];
+
+/** Run a built-in tool. Never throws — returns a string for the model. */
+async function runBuiltinTool(
+  toolName: string,
+  args: Record<string, unknown>,
+  tenant: Tenant,
+): Promise<string> {
+  if (toolName === 'get_leaderboard') {
+    const offerId = typeof args.recurringOfferId === 'string' ? args.recurringOfferId : '';
+    if (!offerId) {
+      return '[get_leaderboard requires recurringOfferId — call list_recurring_incentives first to find it]';
+    }
+    const limit = typeof args.limit === 'number' ? args.limit : 50;
+    return fetchLeaderboard(tenant.torque_mcp_token, tenant.torque_project_id, offerId, limit);
+  }
+  return `[unknown builtin tool: ${toolName}]`;
+}
 
 /**
  * Build the effective system prompt: the tenant's soul, plus a small runtime
@@ -156,7 +208,9 @@ export async function runTenantTurn(
       ? isIngesterReadonlyTool(toolName)
       : serverName === 'torque'
         ? isTorqueReadonlyTool(toolName)
-        : false;
+        : serverName === 'builtin'
+          ? isBuiltinTool(toolName)
+          : false;
   const sessionForServer = (serverName: string) =>
     serverName === 'ingester' ? ingesterSession : session;
 
@@ -181,6 +235,7 @@ export async function runTenantTurn(
     const exposedTools = [
       ...session.tools,
       ...(ingesterSession ? ingesterSession.tools : []),
+      ...BUILTIN_TOOLS,
     ].filter((t) => isAllowed(t.serverName, t.toolName));
     const toolsParam: ChatCompletionTool[] | undefined = exposedTools.length > 0
       ? exposedTools.map((t) => ({
@@ -245,10 +300,6 @@ export async function runTenantTurn(
             if (!isAllowed(def.serverName, def.toolName)) {
               return { id: tc.id, content: `[tool ${def.toolName} is not permitted]` };
             }
-            const toolSession = sessionForServer(def.serverName);
-            if (!toolSession) {
-              return { id: tc.id, content: `[tool ${def.toolName} is not available]` };
-            }
             let args: Record<string, unknown> = {};
             try {
               args = tc.function.arguments
@@ -259,11 +310,24 @@ export async function runTenantTurn(
             }
             toolsUsed.push(def.toolName);
             try {
-              const body = await callWithTimeout(
-                toolSession.call(def.toolName, args),
-                TOOL_CALL_TIMEOUT_MS,
-                `${def.serverName} tool ${def.toolName} timed out`,
-              );
+              let body: string;
+              if (def.serverName === 'builtin') {
+                body = await callWithTimeout(
+                  runBuiltinTool(def.toolName, args, tenant),
+                  TOOL_CALL_TIMEOUT_MS,
+                  `builtin tool ${def.toolName} timed out`,
+                );
+              } else {
+                const toolSession = sessionForServer(def.serverName);
+                if (!toolSession) {
+                  return { id: tc.id, content: `[tool ${def.toolName} is not available]` };
+                }
+                body = await callWithTimeout(
+                  toolSession.call(def.toolName, args),
+                  TOOL_CALL_TIMEOUT_MS,
+                  `${def.serverName} tool ${def.toolName} timed out`,
+                );
+              }
               return { id: tc.id, content: body };
             } catch (err) {
               return { id: tc.id, content: `[tool error: ${(err as Error).message}]` };
