@@ -17,39 +17,51 @@ import { openTenantTorqueSession } from './mcp';
 
 export type ScopeCheckResult = { ok: true } | { ok: false; reason: string };
 
+// A Torque project id is a cuid (`c` + lowercased alphanumerics, ~25 chars).
+// Used to pull ids out of the markdown table the MCP now renders.
+const PROJECT_ID_RE = /(?<![A-Za-z0-9])c[a-z0-9]{20,32}(?![A-Za-z0-9])/g;
+
 /**
  * Extract Torque project ids from whatever `list_projects` returned. The MCP
- * normalizes tool output to a string; the body is JSON in practice but its
- * exact shape (array of objects, `{ projects: [...] }`, etc.) is not contract,
- * so we walk the parsed value and collect every plausible project id.
+ * does NOT guarantee a stable shape: older builds returned JSON, current ones
+ * (@torque-labs/mcp >=0.4.8) return a human-readable markdown table as text
+ * (e.g. `| **$TRUMP** | \`cmo7...\` |`). We must handle both, and we must fail
+ * CLOSED — under-counting a multi-project token to one id would silently break
+ * isolation, so we collect ids from BOTH a JSON walk and a raw-text id scan and
+ * union them (over-counting only makes the scope check stricter / safer).
  */
 function extractProjectIds(body: string): string[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    return [];
-  }
   const ids = new Set<string>();
-  const visit = (node: unknown): void => {
-    if (Array.isArray(node)) {
-      for (const item of node) visit(item);
-      return;
-    }
-    if (node && typeof node === 'object') {
-      const obj = node as Record<string, unknown>;
-      // A project object exposes its id as `id` or `projectId`.
-      for (const key of ['id', 'projectId', 'project_id']) {
-        const v = obj[key];
-        if (typeof v === 'string' && v.length > 0) ids.add(v);
+
+  // Path 1: structured JSON (forward/back compat with array or {projects:[…]}).
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const visit = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        for (const item of node) visit(item);
+        return;
       }
-      // Recurse into common containers (projects, data, result, etc.).
-      for (const v of Object.values(obj)) {
-        if (v && typeof v === 'object') visit(v);
+      if (node && typeof node === 'object') {
+        const obj = node as Record<string, unknown>;
+        for (const key of ['id', 'projectId', 'project_id']) {
+          const v = obj[key];
+          if (typeof v === 'string' && v.length > 0) ids.add(v);
+        }
+        for (const v of Object.values(obj)) {
+          if (v && typeof v === 'object') visit(v);
+        }
       }
-    }
-  };
-  visit(parsed);
+    };
+    visit(parsed);
+  } catch {
+    // Not JSON — fall through to the text scan below.
+  }
+
+  // Path 2: raw text / markdown — the table renders each project's id verbatim.
+  // The preamble and headers contain no cuid-shaped tokens, so this matches
+  // exactly the project ids (one per row).
+  for (const m of body.matchAll(PROJECT_ID_RE)) ids.add(m[0]);
+
   return [...ids];
 }
 
