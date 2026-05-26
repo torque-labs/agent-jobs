@@ -14,6 +14,8 @@ export const SCOPES = {
   'runs:cancel': 'Cancel an in-flight run',
   'webhooks:admin': 'Manage outbound webhooks',
   'keys:admin': 'Create, list, revoke API keys',
+  'agents:read': 'Read tenant customer-agents',
+  'agents:write': 'Create, update, delete tenant customer-agents',
   admin: 'Implies every other scope',
 } as const;
 
