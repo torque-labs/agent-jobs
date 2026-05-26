@@ -66,6 +66,27 @@ function extractProjectIds(body: string): string[] {
 }
 
 /**
+ * Independent upper-bound on how many projects `list_projects` describes, used
+ * to fail CLOSED even if the id scan under-counts (e.g. a row truncated or
+ * rendered in an unexpected charset). We do NOT trust the id count alone: a
+ * multi-project token whose extra rows the regex missed would otherwise pass.
+ * Returns the max of two signals (0 if neither is present):
+ *  - the count the MCP itself declares, e.g. "**Your Projects** (3)";
+ *  - the number of distinct text lines that carry a project-id-shaped token.
+ * A correctly-scoped token must yield exactly one project, so the caller
+ * rejects anything > 1.
+ */
+function countProjectsDescribed(body: string): number {
+  let declared = 0;
+  const m = body.match(/projects?\**\s*\((\d+)\)/i);
+  if (m) declared = Number(m[1]);
+  let idRows = 0;
+  const rowRe = /(?<![A-Za-z0-9])c[a-z0-9]{20,32}(?![A-Za-z0-9])/;
+  for (const line of body.split('\n')) if (rowRe.test(line)) idRows += 1;
+  return Math.max(declared, idRows);
+}
+
+/**
  * Verify `token` is scoped to exactly `expectedProjectId`. Opens an ephemeral
  * scoped Torque session (always torn down) and inspects `list_projects`.
  */
@@ -93,6 +114,16 @@ export async function verifyTorqueTokenScope(
       return {
         ok: false,
         reason: `token is scoped to ${ids.length} projects; it must be scoped to exactly one`,
+      };
+    }
+    // Fail closed against id-scan under-counting: if the response independently
+    // describes more than one project (declared count or multiple id-bearing
+    // rows), reject even though only one id was extracted.
+    const described = countProjectsDescribed(body);
+    if (described > 1) {
+      return {
+        ok: false,
+        reason: `list_projects describes ${described} projects; token must be scoped to exactly one`,
       };
     }
     if (ids[0] !== expectedProjectId) {

@@ -398,7 +398,16 @@ export async function openTenantTorqueSession(
     try {
       await client.callTool({ name: 'set_active_project', arguments: { projectId: activeProjectId } });
     } catch (pinErr) {
+      // Pinning is a precondition for a correct turn, not best-effort: if it
+      // fails, the session would run in an unverified active-project state.
+      // Tear down and fail so runTenantTurn returns a friendly error instead.
       console.error('[mcp] failed to pin active project for tenant session:', pinErr);
+      try {
+        await transport.close();
+      } catch (closeErr) {
+        console.error('[mcp] cleanup after pin failure:', closeErr);
+      }
+      throw new Error('could not pin active project for tenant session');
     }
   }
 
