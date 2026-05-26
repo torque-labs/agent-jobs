@@ -50,6 +50,8 @@ COPY --from=builder /app/public           ./public
 COPY --from=builder /app/server.js        ./server.js
 COPY --from=builder /app/lib              ./lib
 COPY --from=builder /app/seed             ./seed
+# Local MCP server scripts spawned by lib/mcp.ts (plain .mjs, run with `node`).
+COPY --from=builder /app/mcp-servers      ./mcp-servers
 COPY --from=builder /app/package.json     ./package.json
 COPY --from=builder /app/next.config.ts   ./next.config.ts
 

@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -129,6 +130,22 @@ export function isIngesterReadonlyTool(toolName: string): boolean {
   return TORQUE_INGESTER_READONLY_TOOLS.has(toolName);
 }
 
+// ---------------------------------------------------------------------------
+// `render` MCP server — local script (mcp-servers/render/index.mjs) that bridges
+// jobs to the deployed render service (https://digest.coolify.torque.so). The
+// service computes every report fact deterministically and gates it, so the LLM
+// never does in-head math. These tools only render/return reports (no customer
+// data is mutated), so both are on the allow-list. Fail-closed: a new render
+// tool must be added here explicitly.
+export const RENDER_TOOLS: ReadonlySet<string> = new Set([
+  'render_leaderboard',
+  'render_rebate',
+]);
+
+export function isRenderTool(toolName: string): boolean {
+  return RENDER_TOOLS.has(toolName);
+}
+
 // OpenRouter caps tool names to 64 chars and disallows certain chars.
 const SAFE_NAME = /[^a-zA-Z0-9_-]/g;
 function makeExposedName(serverName: string, toolName: string): string {
@@ -166,6 +183,27 @@ function buildSpecs(): ServerSpec[] {
     });
   } else {
     console.warn('[mcp] SUPABASE_ACCESS_TOKEN not set — supabase MCP will not be loaded');
+  }
+
+  // `render` — a LOCAL script we own (no npx/registry resolution at the
+  // isolation boundary; H3-style supply-chain stance). It POSTs the rendered
+  // reports to the deployed render service using the injected Bearer key.
+  const renderUrl = process.env.RENDER_SERVICE_URL;
+  const digestKey = process.env.DIGEST_API_KEY;
+  if (renderUrl && digestKey) {
+    // Resolve against the process cwd (repo root in dev, /app in the container)
+    // so the same path works under `pnpm dev:server` and `node server.js`.
+    specs.push({
+      name: 'render',
+      command: 'node',
+      args: [resolve(process.cwd(), 'mcp-servers/render/index.mjs')],
+      env: {
+        RENDER_SERVICE_URL: renderUrl,
+        DIGEST_API_KEY: digestKey,
+      },
+    });
+  } else {
+    console.warn('[mcp] RENDER_SERVICE_URL / DIGEST_API_KEY not set — render MCP will not be loaded');
   }
 
   return specs;
