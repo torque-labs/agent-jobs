@@ -122,14 +122,16 @@ export type ApiKey = {
 /** Per-channel config. Bot tokens / signing secrets are secrets. */
 export type TenantChannels = {
   telegram?: {
-    bot_token: string;
-    /** Telegram chat ids allowed to talk to this tenant's bot. */
+    /** Per-tenant bot token (white-label). OPTIONAL: shared mode uses env TELEGRAM_BOT_TOKEN. */
+    bot_token?: string;
+    /** Telegram chat ids allowed to talk — also the chat→tenant routing key in shared mode. */
     allowed_chats: string[];
     /**
      * Secret token echoed by Telegram in X-Telegram-Bot-Api-Secret-Token.
-     * REQUIRED for an enabled channel (C1) — the route fails closed without it.
+     * Required by the per-tenant route (fails closed without it); shared route
+     * verifies env TELEGRAM_WEBHOOK_SECRET instead.
      */
-    webhook_secret: string;
+    webhook_secret?: string;
     /**
      * Opt out of the allow-list and accept ANY chat (M2). Must be set
      * explicitly; an empty allowed_chats does NOT imply allow-all.
@@ -137,9 +139,10 @@ export type TenantChannels = {
     allow_all?: boolean;
   };
   slack?: {
-    bot_token: string;
-    /** REQUIRED for an enabled channel (C1) — the route fails closed without it. */
-    signing_secret: string;
+    /** Per-tenant bot token (white-label). OPTIONAL: shared mode uses env. */
+    bot_token?: string;
+    /** Per-tenant signing secret. OPTIONAL in shared mode (env). */
+    signing_secret?: string;
     /** Slack channel ids allowed to talk to this tenant's app. */
     allowed_channels: string[];
     /**

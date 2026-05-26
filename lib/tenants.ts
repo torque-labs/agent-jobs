@@ -313,6 +313,28 @@ export async function getTenantForTelegram(slug: string): Promise<Tenant | null>
   return t;
 }
 
+/**
+ * Shared-bot routing: resolve the tenant that owns a Telegram chat id. The
+ * chat id (a customer's group/DM) is enrolled in exactly one tenant's
+ * channels.telegram.allowed_chats. Fails closed: no match → null; an ambiguous
+ * mapping (same chat in >1 tenant) → null + log, never a guess. `allow_all` is
+ * intentionally ignored here — in shared mode a tenant routes ONLY by the chat
+ * ids explicitly enrolled to it.
+ */
+export async function getTenantByTelegramChat(chatId: string): Promise<Tenant | null> {
+  await ensureTenantSchema();
+  const rows = await sql<TenantRow[]>`SELECT * FROM tenants WHERE status = 'active'`;
+  const matches = rows
+    .map(mapRow)
+    .filter((t) => (t.channels.telegram?.allowed_chats ?? []).includes(chatId));
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    console.error(`[tenants] telegram chat ${chatId} maps to ${matches.length} tenants; refusing (ambiguous)`);
+    return null;
+  }
+  return matches[0];
+}
+
 /** Slack-routed tenants only. */
 export async function getTenantForSlack(slug: string): Promise<Tenant | null> {
   const t = await getTenantBySlug(slug);

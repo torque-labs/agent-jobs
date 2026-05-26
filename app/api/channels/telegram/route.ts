@@ -1,0 +1,122 @@
+import { NextResponse } from 'next/server';
+import { timingSafeEqual } from 'node:crypto';
+import { runTenantTurn } from '@/lib/agent-runtime';
+import { getTenantByTelegramChat } from '@/lib/tenants';
+
+export const runtime = 'nodejs';
+
+/**
+ * SHARED Telegram bot webhook — one bot serves every customer.
+ *
+ * Path: /api/channels/telegram   (NO tenant slug — distinct from the
+ * per-tenant white-label route at /api/channels/telegram/[tenant]).
+ *
+ * Routing: the inbound chat id selects the tenant. A customer's group/DM is
+ * enrolled in exactly one tenant's `channels.telegram.allowed_chats`
+ * (getTenantByTelegramChat). Unenrolled or ambiguous chats are ignored — never
+ * guessed. The per-turn isolation boundary is unchanged: the resolved tenant's
+ * scoped Torque token is what runTenantTurn uses.
+ *
+ * Auth: the GLOBAL `TELEGRAM_WEBHOOK_SECRET` echoed by Telegram in
+ * `X-Telegram-Bot-Api-Secret-Token` (set when the single webhook is
+ * registered). Reply uses the GLOBAL `TELEGRAM_BOT_TOKEN`. If either env is
+ * unset, shared mode is off and this route fails closed (401). Set
+ * `TELEGRAM_SEND_DISABLED=true` to dry-run (log instead of calling Telegram).
+ */
+export async function POST(req: Request) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
+  if (!botToken || !expectedSecret) {
+    console.error('[telegram/shared] rejected: TELEGRAM_BOT_TOKEN / TELEGRAM_WEBHOOK_SECRET not configured');
+    return NextResponse.json({ ok: false }, { status: 401 });
+  }
+
+  // Fail closed on the shared secret, constant-time (mirrors the per-tenant route).
+  const provided = req.headers.get('x-telegram-bot-api-secret-token') ?? '';
+  if (!secretsMatch(provided, expectedSecret)) {
+    return NextResponse.json({ ok: false }, { status: 401 });
+  }
+
+  let update: TelegramUpdate;
+  try {
+    update = (await req.json()) as TelegramUpdate;
+  } catch {
+    return NextResponse.json({ ok: true });
+  }
+
+  const message = update.message ?? update.edited_message;
+  const chatId = message?.chat?.id;
+  const text = message?.text;
+  if (chatId === undefined || !text) {
+    // Non-text update (sticker, join event, etc.) — ack and ignore.
+    return NextResponse.json({ ok: true });
+  }
+
+  const tenant = await getTenantByTelegramChat(String(chatId)).catch(() => null);
+  if (!tenant) {
+    // Chat not enrolled to any tenant (or ambiguous) — ack so Telegram stops
+    // retrying, and do NO work. We never reply to an unenrolled chat.
+    return NextResponse.json({ ok: true });
+  }
+
+  try {
+    const result = await runTenantTurn(tenant.id, text, {
+      conversationId: `telegram:${chatId}`,
+      speaker: message?.from?.first_name,
+      // TODO: per-namespace history store. Stateless single-turn for now.
+      history: [],
+    });
+    await sendTelegramMessage(botToken, tenant.slug, chatId, result.reply);
+  } catch (err) {
+    console.error(
+      `[telegram/shared] turn failed for tenant ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
+    );
+    await sendTelegramMessage(
+      botToken,
+      tenant.slug,
+      chatId,
+      'Sorry — I hit an error. Please try again in a moment.',
+    ).catch(() => {});
+  }
+
+  return NextResponse.json({ ok: true });
+}
+
+/** Send a reply via the shared bot. Dry-run when TELEGRAM_SEND_DISABLED=true. */
+async function sendTelegramMessage(
+  botToken: string,
+  slug: string,
+  chatId: number,
+  text: string,
+): Promise<void> {
+  if (process.env.TELEGRAM_SEND_DISABLED === 'true') {
+    console.log(`[telegram/shared] (send disabled) tenant ${slug} -> chat ${chatId}: ${text.slice(0, 120)}`);
+    return;
+  }
+  const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
+  });
+  if (!res.ok) {
+    console.error(`[telegram/shared] sendMessage ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+}
+
+/** Constant-time secret comparison; false-fast on length mismatch. */
+function secretsMatch(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+type TelegramUpdate = {
+  message?: TelegramMessage;
+  edited_message?: TelegramMessage;
+};
+type TelegramMessage = {
+  text?: string;
+  chat?: { id: number };
+  from?: { first_name?: string };
+};

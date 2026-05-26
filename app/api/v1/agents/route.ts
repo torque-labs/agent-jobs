@@ -13,9 +13,9 @@ export const runtime = 'nodejs';
 // stored in the first place.
 const telegramChannelSchema = z
   .object({
-    bot_token: z.string().min(1),
+    bot_token: z.string().min(1).optional(),
     allowed_chats: z.array(z.string()).default([]),
-    webhook_secret: z.string().min(1, 'webhook_secret is required for an enabled Telegram channel'),
+    webhook_secret: z.string().min(1).optional(),
     allow_all: z.boolean().optional(),
   })
   .refine((c) => c.allow_all === true || c.allowed_chats.length > 0, {
@@ -25,8 +25,8 @@ const telegramChannelSchema = z
 
 const slackChannelSchema = z
   .object({
-    bot_token: z.string().min(1),
-    signing_secret: z.string().min(1, 'signing_secret is required for an enabled Slack channel'),
+    bot_token: z.string().min(1).optional(),
+    signing_secret: z.string().min(1).optional(),
     allowed_channels: z.array(z.string()).default([]),
     allow_all: z.boolean().optional(),
   })
