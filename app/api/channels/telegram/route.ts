@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { runTenantTurn } from '@/lib/agent-runtime';
 import { getTenantByTelegramChat } from '@/lib/tenants';
 import { gateTelegram } from '@/lib/mention';
+import { claimEvent } from '@/lib/dedupe';
 
 export const runtime = 'nodejs';
 
@@ -53,6 +54,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true });
   }
 
+  // Idempotency: skip if we've already processed this update (Telegram
+  // re-delivers on a slow ack). Claimed synchronously before any work.
+  if (update.update_id !== undefined && !(await claimEvent(`tg:${update.update_id}`))) {
+    return NextResponse.json({ ok: true });
+  }
+
   const tenant = await getTenantByTelegramChat(String(chatId)).catch(() => null);
   if (!tenant) {
     // Chat not enrolled to any tenant (or ambiguous) — ack so Telegram stops
@@ -66,26 +73,31 @@ export async function POST(req: Request) {
   if (!gate.respond) return NextResponse.json({ ok: true });
   const turnText = gate.text;
 
-  try {
-    const result = await withTyping(botToken, chatId, () =>
-      runTenantTurn(tenant.id, turnText, {
-        conversationId: `telegram:${chatId}`,
-        speaker: message?.from?.first_name,
-        persist: true,
-      }),
-    );
-    await sendTelegramMessage(botToken, tenant.slug, chatId, result.reply);
-  } catch (err) {
-    console.error(
-      `[telegram/shared] turn failed for tenant ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
-    );
-    await sendTelegramMessage(
-      botToken,
-      tenant.slug,
-      chatId,
-      'Sorry — I hit an error. Please try again in a moment.',
-    ).catch(() => {});
-  }
+  // Ack NOW, run the (slow) turn + reply detached — so a slow turn can't blow
+  // Telegram's webhook timeout and trigger a retry. Safe on a persistent server.
+  const speaker = message?.from?.first_name;
+  void (async () => {
+    try {
+      const result = await withTyping(botToken, chatId, () =>
+        runTenantTurn(tenant.id, turnText, {
+          conversationId: `telegram:${chatId}`,
+          speaker,
+          persist: true,
+        }),
+      );
+      await sendTelegramMessage(botToken, tenant.slug, chatId, result.reply);
+    } catch (err) {
+      console.error(
+        `[telegram/shared] turn failed for tenant ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
+      );
+      await sendTelegramMessage(
+        botToken,
+        tenant.slug,
+        chatId,
+        'Sorry — I hit an error. Please try again in a moment.',
+      ).catch(() => {});
+    }
+  })();
 
   return NextResponse.json({ ok: true });
 }
@@ -144,6 +156,7 @@ function secretsMatch(provided: string, expected: string): boolean {
 }
 
 type TelegramUpdate = {
+  update_id?: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
 };

@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { runTenantTurn } from '@/lib/agent-runtime';
 import { getTenantForTelegram } from '@/lib/tenants';
 import { gateTelegram } from '@/lib/mention';
+import { claimEvent } from '@/lib/dedupe';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -80,27 +81,35 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
     return NextResponse.json({ ok: true });
   }
 
+  if (update.update_id !== undefined && !(await claimEvent(`tg:${update.update_id}`))) {
+    return NextResponse.json({ ok: true });
+  }
+
   const tgToken = tenant.channels.telegram?.bot_token;
   const gate = await gateTelegram(message, tgToken ?? '', text);
   if (!gate.respond) return NextResponse.json({ ok: true });
   const turnText = gate.text;
-  try {
-    const result = await withTyping(tgToken, chatId, () =>
-      runTenantTurn(tenant.id, turnText, {
-        conversationId: `telegram:${chatId}`,
-        speaker: message?.from?.first_name,
-        persist: true,
-      }),
-    );
-    await sendTelegramMessage(tenant, chatId, result.reply);
-  } catch (err) {
-    console.error(`[telegram/${slug}] turn failed:`, err);
-    await sendTelegramMessage(
-      tenant,
-      chatId,
-      'Sorry — I hit an error. Please try again in a moment.',
-    ).catch(() => {});
-  }
+  const speaker = message?.from?.first_name;
+  // Ack now; run the turn + reply detached (slow turn must not blow the timeout).
+  void (async () => {
+    try {
+      const result = await withTyping(tgToken, chatId, () =>
+        runTenantTurn(tenant.id, turnText, {
+          conversationId: `telegram:${chatId}`,
+          speaker,
+          persist: true,
+        }),
+      );
+      await sendTelegramMessage(tenant, chatId, result.reply);
+    } catch (err) {
+      console.error(`[telegram/${slug}] turn failed:`, err instanceof Error ? err.name : 'error');
+      await sendTelegramMessage(
+        tenant,
+        chatId,
+        'Sorry — I hit an error. Please try again in a moment.',
+      ).catch(() => {});
+    }
+  })();
 
   return NextResponse.json({ ok: true });
 }
@@ -168,6 +177,7 @@ function secretsMatch(provided: string, expected: string): boolean {
 
 // Minimal Telegram update shape — only the fields we read.
 type TelegramUpdate = {
+  update_id?: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
 };

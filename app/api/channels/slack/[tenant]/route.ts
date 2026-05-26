@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runTenantTurn } from '@/lib/agent-runtime';
 import { getTenantForSlack } from '@/lib/tenants';
 import { gateSlack } from '@/lib/mention';
+import { claimEvent } from '@/lib/dedupe';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -66,6 +67,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
     !event.text ||
     !event.channel
   ) {
+    return NextResponse.json({ ok: true });
+  }
+
+  // Idempotency: Slack retries on slow/failed ack — dedupe on event_id.
+  if (payload.event_id && !(await claimEvent(`slack:${payload.event_id}`))) {
     return NextResponse.json({ ok: true });
   }
 
