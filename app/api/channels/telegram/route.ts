@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'node:crypto';
 import { runTenantTurn } from '@/lib/agent-runtime';
 import { getTenantByTelegramChat } from '@/lib/tenants';
+import { gateTelegram } from '@/lib/mention';
 
 export const runtime = 'nodejs';
 
@@ -59,9 +60,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true });
   }
 
+  // In groups, only respond when the bot is @mentioned or replied to (DMs
+  // always respond). Ack + ignore otherwise so we don't answer every message.
+  const gate = await gateTelegram(message, botToken, text);
+  if (!gate.respond) return NextResponse.json({ ok: true });
+  const turnText = gate.text;
+
   try {
     const result = await withTyping(botToken, chatId, () =>
-      runTenantTurn(tenant.id, text, {
+      runTenantTurn(tenant.id, turnText, {
         conversationId: `telegram:${chatId}`,
         speaker: message?.from?.first_name,
         persist: true,
@@ -142,6 +149,7 @@ type TelegramUpdate = {
 };
 type TelegramMessage = {
   text?: string;
-  chat?: { id: number };
+  chat?: { id: number; type?: string };
   from?: { first_name?: string };
+  reply_to_message?: { from?: { id?: number } };
 };

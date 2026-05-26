@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'node:crypto';
 import { runTenantTurn } from '@/lib/agent-runtime';
 import { getTenantForTelegram } from '@/lib/tenants';
+import { gateTelegram } from '@/lib/mention';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -80,9 +81,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
   }
 
   const tgToken = tenant.channels.telegram?.bot_token;
+  const gate = await gateTelegram(message, tgToken ?? '', text);
+  if (!gate.respond) return NextResponse.json({ ok: true });
+  const turnText = gate.text;
   try {
     const result = await withTyping(tgToken, chatId, () =>
-      runTenantTurn(tenant.id, text, {
+      runTenantTurn(tenant.id, turnText, {
         conversationId: `telegram:${chatId}`,
         speaker: message?.from?.first_name,
         persist: true,
@@ -169,6 +173,7 @@ type TelegramUpdate = {
 };
 type TelegramMessage = {
   text?: string;
-  chat?: { id: number };
+  chat?: { id: number; type?: string };
   from?: { first_name?: string };
+  reply_to_message?: { from?: { id?: number } };
 };

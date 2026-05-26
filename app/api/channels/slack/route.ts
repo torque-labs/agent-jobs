@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runTenantTurn } from '@/lib/agent-runtime';
 import { getTenantBySlackChannel } from '@/lib/tenants';
+import { gateSlack } from '@/lib/mention';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -68,6 +69,12 @@ export async function POST(req: Request) {
     // Channel not enrolled to any tenant (or ambiguous) — ack, do no work.
     return NextResponse.json({ ok: true });
   }
+
+  // In channels, only respond when the bot is @mentioned (IMs always respond).
+  const slackToken = tenant.channels.slack?.bot_token ?? process.env.SLACK_BOT_TOKEN;
+  const gate = await gateSlack(event, slackToken ?? '');
+  if (!gate.respond) return NextResponse.json({ ok: true });
+  event.text = gate.text;
 
   // Ack within 3s; run the model work + reply detached. (Same M3 dedupe TODO as
   // the per-tenant route: no event_id dedupe / durable enqueue yet.)
@@ -152,6 +159,7 @@ type SlackEventPayload = {
 };
 type SlackMessageEvent = {
   type?: string;
+  channel_type?: string;
   subtype?: string;
   bot_id?: string;
   text?: string;

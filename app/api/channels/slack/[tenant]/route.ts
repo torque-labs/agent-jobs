@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { runTenantTurn } from '@/lib/agent-runtime';
 import { getTenantForSlack } from '@/lib/tenants';
+import { gateSlack } from '@/lib/mention';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -94,6 +95,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
   // retries are idempotent. Left as a TODO rather than half-built to avoid a
   // false sense of durability. The Slack `event_id` (payload.event_id) is the
   // natural idempotency key for that work.
+  const slackToken = tenant.channels.slack?.bot_token;
+  const gate = await gateSlack(event, slackToken ?? '');
+  if (!gate.respond) return NextResponse.json({ ok: true });
+  event.text = gate.text;
+
   void handleSlackTurn(tenant, event).catch((err) => {
     console.error(`[slack/${slug}] detached turn failed:`, err);
   });
@@ -178,6 +184,7 @@ type SlackEventPayload = {
 };
 type SlackMessageEvent = {
   type?: string;
+  channel_type?: string;
   subtype?: string;
   bot_id?: string;
   text?: string;
