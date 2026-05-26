@@ -60,12 +60,14 @@ export async function POST(req: Request) {
   }
 
   try {
-    const result = await runTenantTurn(tenant.id, text, {
-      conversationId: `telegram:${chatId}`,
-      speaker: message?.from?.first_name,
-      // TODO: per-namespace history store. Stateless single-turn for now.
-      history: [],
-    });
+    const result = await withTyping(botToken, chatId, () =>
+      runTenantTurn(tenant.id, text, {
+        conversationId: `telegram:${chatId}`,
+        speaker: message?.from?.first_name,
+        // TODO: per-namespace history store. Stateless single-turn for now.
+        history: [],
+      }),
+    );
     await sendTelegramMessage(botToken, tenant.slug, chatId, result.reply);
   } catch (err) {
     console.error(
@@ -100,6 +102,30 @@ async function sendTelegramMessage(
   });
   if (!res.ok) {
     console.error(`[telegram/shared] sendMessage ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+}
+
+/** Show "typing…" while the turn runs: ping sendChatAction now + every ~4s. */
+async function withTyping<T>(botToken: string, chatId: number, fn: () => Promise<T>): Promise<T> {
+  if (process.env.TELEGRAM_SEND_DISABLED === 'true') return fn();
+  void sendChatAction(botToken, chatId);
+  const iv = setInterval(() => void sendChatAction(botToken, chatId), 4000);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(iv);
+  }
+}
+
+async function sendChatAction(botToken: string, chatId: number): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendChatAction`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    });
+  } catch {
+    // best-effort — never let a typing ping fail the turn
   }
 }
 

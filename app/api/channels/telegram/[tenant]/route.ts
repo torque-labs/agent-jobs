@@ -79,14 +79,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
     return NextResponse.json({ ok: true });
   }
 
+  const tgToken = tenant.channels.telegram?.bot_token;
   try {
-    const result = await runTenantTurn(tenant.id, text, {
-      conversationId: `telegram:${chatId}`,
-      speaker: message?.from?.first_name,
-      // TODO: load prior turns for this conversation from a per-namespace
-      // history store. Stateless single-turn for the foundation pass.
-      history: [],
-    });
+    const result = await withTyping(tgToken, chatId, () =>
+      runTenantTurn(tenant.id, text, {
+        conversationId: `telegram:${chatId}`,
+        speaker: message?.from?.first_name,
+        // TODO: load prior turns for this conversation from a per-namespace
+        // history store. Stateless single-turn for the foundation pass.
+        history: [],
+      }),
+    );
     await sendTelegramMessage(tenant, chatId, result.reply);
   } catch (err) {
     console.error(`[telegram/${slug}] turn failed:`, err);
@@ -122,6 +125,30 @@ async function sendTelegramMessage(tenant: Tenant, chatId: number, text: string)
   });
   if (!res.ok) {
     console.error(`[telegram/${tenant.slug}] sendMessage ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+}
+
+/** Show "typing…" while the turn runs: ping sendChatAction now + every ~4s. */
+async function withTyping<T>(botToken: string | undefined, chatId: number, fn: () => Promise<T>): Promise<T> {
+  if (!botToken || process.env.TELEGRAM_SEND_DISABLED === 'true') return fn();
+  void sendChatAction(botToken, chatId);
+  const iv = setInterval(() => void sendChatAction(botToken, chatId), 4000);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(iv);
+  }
+}
+
+async function sendChatAction(botToken: string, chatId: number): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendChatAction`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    });
+  } catch {
+    // best-effort
   }
 }
 
