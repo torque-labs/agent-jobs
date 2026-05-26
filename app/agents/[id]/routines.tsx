@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { Loader2Icon, PlayIcon, TrashIcon } from 'lucide-react';
+import { Loader2Icon, PlayIcon, TrashIcon, PencilIcon, EyeIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -15,11 +15,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 
 export type RoutineView = {
   id: string;
   name: string;
   cron: string;
+  prompt: string;
   channel: 'telegram' | 'slack';
   enabled: boolean;
   last_run_at: string | null;
@@ -37,41 +46,313 @@ function humanCron(cron: string): string {
   return `Weekly on ${DAYS[Number(m[3])]} at ${hh}:${mm} UTC`;
 }
 
-function buildCron(freq: string, weekday: string, time: string): string {
-  const [h, m] = time.split(':');
+type FormState = {
+  name: string;
+  channel: 'telegram' | 'slack';
+  freq: string;
+  weekday: string;
+  time: string;
+  advanced: boolean;
+  rawCron: string;
+  prompt: string;
+};
+
+function emptyForm(): FormState {
+  return {
+    name: '',
+    channel: 'telegram',
+    freq: 'daily',
+    weekday: '1',
+    time: '09:00',
+    advanced: false,
+    rawCron: '0 9 * * *',
+    prompt: '',
+  };
+}
+
+function formFromRoutine(r: RoutineView): FormState {
+  const m = r.cron.match(/^(\d+) (\d+) \* \* (\*|[0-6])$/);
+  if (m) {
+    const time = `${m[2].padStart(2, '0')}:${m[1].padStart(2, '0')}`;
+    return {
+      name: r.name,
+      channel: r.channel,
+      prompt: r.prompt,
+      freq: m[3] === '*' ? 'daily' : 'weekly',
+      weekday: m[3] === '*' ? '1' : m[3],
+      time,
+      advanced: false,
+      rawCron: r.cron,
+    };
+  }
+  return {
+    name: r.name,
+    channel: r.channel,
+    prompt: r.prompt,
+    freq: 'daily',
+    weekday: '1',
+    time: '09:00',
+    advanced: true,
+    rawCron: r.cron,
+  };
+}
+
+function cronOf(f: FormState): string {
+  if (f.advanced) return f.rawCron.trim();
+  const [h, m] = f.time.split(':');
   const HH = Number(h);
   const MM = Number(m);
-  if (freq === 'weekly') return `${MM} ${HH} * * ${weekday}`;
-  return `${MM} ${HH} * * *`;
+  return f.freq === 'weekly' ? `${MM} ${HH} * * ${f.weekday}` : `${MM} ${HH} * * *`;
+}
+
+/** Shared field set for create + edit, with an inline "Preview output" runner. */
+function RoutineFields({
+  tenantId,
+  value,
+  onChange,
+  disabled,
+}: {
+  tenantId: string;
+  value: FormState;
+  onChange: (patch: Partial<FormState>) => void;
+  disabled: boolean;
+}) {
+  const [previewing, setPreviewing] = useState(false);
+  const [preview, setPreview] = useState<string | null>(null);
+
+  async function previewOutput() {
+    if (!value.prompt.trim()) {
+      toast.error('Add a prompt to preview');
+      return;
+    }
+    setPreviewing(true);
+    setPreview(null);
+    try {
+      const res = await fetch(`/api/internal/agents/${tenantId}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: value.prompt.trim() }),
+      });
+      const b = await res.json().catch(() => null);
+      if (!res.ok) {
+        toast.error(b?.error ?? `Preview failed (${res.status})`);
+        return;
+      }
+      setPreview(b.reply ?? '(no output)');
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">Name</Label>
+          <Input
+            placeholder="Daily digest"
+            value={value.name}
+            onChange={(e) => onChange({ name: e.target.value })}
+            disabled={disabled}
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">Channel</Label>
+          <Select
+            value={value.channel}
+            onValueChange={(v) => onChange({ channel: v as 'telegram' | 'slack' })}
+            disabled={disabled}
+          >
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="telegram">Telegram</SelectItem>
+              <SelectItem value="slack">Slack</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {value.advanced ? (
+        <div className="flex flex-col gap-1.5">
+          <Label className="text-xs">Cron (UTC)</Label>
+          <Input
+            value={value.rawCron}
+            onChange={(e) => onChange({ rawCron: e.target.value })}
+            disabled={disabled}
+            className="font-mono text-xs"
+          />
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Frequency</Label>
+            <Select value={value.freq} onValueChange={(v) => onChange({ freq: v })} disabled={disabled}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="daily">Daily</SelectItem>
+                <SelectItem value="weekly">Weekly</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {value.freq === 'weekly' && (
+            <div className="flex flex-col gap-1.5">
+              <Label className="text-xs">Day</Label>
+              <Select value={value.weekday} onValueChange={(v) => onChange({ weekday: v })} disabled={disabled}>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DAYS.map((d, i) => (
+                    <SelectItem key={d} value={String(i)}>{d}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          <div className="flex flex-col gap-1.5">
+            <Label className="text-xs">Time (UTC)</Label>
+            <Input type="time" value={value.time} onChange={(e) => onChange({ time: e.target.value })} disabled={disabled} />
+          </div>
+        </div>
+      )}
+
+      <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={value.advanced}
+          onChange={(e) => onChange({ advanced: e.target.checked })}
+          disabled={disabled}
+        />
+        Advanced: raw cron
+      </label>
+
+      <div className="flex flex-col gap-1.5">
+        <Label className="text-xs">Prompt</Label>
+        <Textarea
+          rows={3}
+          placeholder="Post a concise daily digest: the current leaderboard top 10 and any campaign changes since yesterday."
+          value={value.prompt}
+          onChange={(e) => onChange({ prompt: e.target.value })}
+          disabled={disabled}
+          className="text-xs"
+        />
+      </div>
+
+      <div>
+        <Button type="button" variant="outline" size="sm" onClick={previewOutput} disabled={disabled || previewing}>
+          {previewing ? <Loader2Icon className="animate-spin" data-icon="inline-start" /> : <EyeIcon data-icon="inline-start" />}
+          Preview output
+        </Button>
+      </div>
+      {preview !== null && (
+        <div className="rounded-md border bg-muted/40 p-3 text-xs whitespace-pre-wrap">
+          {preview}
+          <div className="mt-2 text-[11px] text-muted-foreground">
+            Preview only — not posted to the channel.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditRoutineDialog({ tenantId, routine }: { tenantId: string; routine: RoutineView }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<FormState>(() => formFromRoutine(routine));
+
+  function patch(p: Partial<FormState>) {
+    setForm((f) => ({ ...f, ...p }));
+  }
+
+  async function save() {
+    if (!form.name.trim() || !form.prompt.trim()) {
+      toast.error('Name and prompt are required');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/internal/agents/${tenantId}/routines/${routine.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name.trim(),
+          channel: form.channel,
+          cron: cronOf(form),
+          prompt: form.prompt.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => null);
+        toast.error(b?.error ?? `Save failed (${res.status})`);
+        return;
+      }
+      toast.success('Routine updated');
+      setOpen(false);
+      router.refresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) setForm(formFromRoutine(routine)); // reset to current on open
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <PencilIcon data-icon="inline-start" />
+          Edit
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Edit routine</DialogTitle>
+        </DialogHeader>
+        <RoutineFields tenantId={tenantId} value={form} onChange={patch} disabled={saving} />
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setOpen(false)} disabled={saving}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={save} disabled={saving}>
+            {saving && <Loader2Icon className="animate-spin" data-icon="inline-start" />}
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 export function RoutinesSection({ id, initial }: { id: string; initial: RoutineView[] }) {
   const router = useRouter();
   const [busyId, setBusyId] = useState<string | null>(null);
-
-  // create form state
-  const [name, setName] = useState('');
-  const [prompt, setPrompt] = useState('');
-  const [channel, setChannel] = useState<'telegram' | 'slack'>('telegram');
-  const [freq, setFreq] = useState('daily');
-  const [weekday, setWeekday] = useState('1');
-  const [time, setTime] = useState('09:00');
-  const [advanced, setAdvanced] = useState(false);
-  const [rawCron, setRawCron] = useState('0 9 * * *');
+  const [form, setForm] = useState<FormState>(emptyForm);
   const [creating, setCreating] = useState(false);
 
+  function patch(p: Partial<FormState>) {
+    setForm((f) => ({ ...f, ...p }));
+  }
+
   async function create() {
-    if (!name.trim() || !prompt.trim()) {
+    if (!form.name.trim() || !form.prompt.trim()) {
       toast.error('Name and prompt are required');
       return;
     }
-    const cron = advanced ? rawCron.trim() : buildCron(freq, weekday, time);
     setCreating(true);
     try {
       const res = await fetch(`/api/internal/agents/${id}/routines`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), prompt: prompt.trim(), channel, cron }),
+        body: JSON.stringify({
+          name: form.name.trim(),
+          prompt: form.prompt.trim(),
+          channel: form.channel,
+          cron: cronOf(form),
+        }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => null);
@@ -79,8 +360,7 @@ export function RoutinesSection({ id, initial }: { id: string; initial: RoutineV
         return;
       }
       toast.success('Routine created');
-      setName('');
-      setPrompt('');
+      setForm(emptyForm());
       router.refresh();
     } finally {
       setCreating(false);
@@ -145,20 +425,21 @@ export function RoutinesSection({ id, initial }: { id: string; initial: RoutineV
         <span className="font-medium">All schedules are UTC.</span>
       </p>
 
-      {/* existing routines */}
       {initial.length > 0 && (
         <div className="mb-4 flex flex-col gap-2">
           {initial.map((r) => (
-            <div key={r.id} className="flex items-center gap-3 rounded-md border bg-background px-3 py-2 text-xs">
-              <div className="flex-1">
+            <div key={r.id} className="flex flex-wrap items-center gap-2 rounded-md border bg-background px-3 py-2 text-xs">
+              <div className="min-w-[180px] flex-1">
                 <div className="font-medium">
                   {r.name} <span className="text-muted-foreground">· {r.channel}</span>
+                  {!r.enabled && <span className="ml-2 text-muted-foreground">(disabled)</span>}
                 </div>
                 <div className="text-muted-foreground">
                   {humanCron(r.cron)}
                   {r.last_status ? ` · last: ${r.last_status}` : ''}
                 </div>
               </div>
+              <EditRoutineDialog tenantId={id} routine={r} />
               <Button variant="outline" size="sm" disabled={busyId === r.id} onClick={() => runNow(r)}>
                 {busyId === r.id ? <Loader2Icon className="animate-spin" /> : <PlayIcon />}
                 Run now
@@ -180,81 +461,9 @@ export function RoutinesSection({ id, initial }: { id: string; initial: RoutineV
         </div>
       )}
 
-      {/* create form */}
-      <div className="flex flex-col gap-3 rounded-md border border-dashed p-3">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="r-name" className="text-xs">Name</Label>
-            <Input id="r-name" placeholder="Daily digest" value={name} onChange={(e) => setName(e.target.value)} disabled={creating} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-xs">Channel</Label>
-            <Select value={channel} onValueChange={(v) => setChannel(v as 'telegram' | 'slack')} disabled={creating}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="telegram">Telegram</SelectItem>
-                <SelectItem value="slack">Slack</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
-
-        {advanced ? (
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="r-cron" className="text-xs">Cron (UTC)</Label>
-            <Input id="r-cron" value={rawCron} onChange={(e) => setRawCron(e.target.value)} disabled={creating} className="font-mono text-xs" />
-          </div>
-        ) : (
-          <div className="grid grid-cols-3 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label className="text-xs">Frequency</Label>
-              <Select value={freq} onValueChange={setFreq} disabled={creating}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="daily">Daily</SelectItem>
-                  <SelectItem value="weekly">Weekly</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            {freq === 'weekly' && (
-              <div className="flex flex-col gap-1.5">
-                <Label className="text-xs">Day</Label>
-                <Select value={weekday} onValueChange={setWeekday} disabled={creating}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {DAYS.map((d, i) => (
-                      <SelectItem key={d} value={String(i)}>{d}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="r-time" className="text-xs">Time (UTC)</Label>
-              <Input id="r-time" type="time" value={time} onChange={(e) => setTime(e.target.value)} disabled={creating} />
-            </div>
-          </div>
-        )}
-
-        <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          <input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} disabled={creating} />
-          Advanced: raw cron
-        </label>
-
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="r-prompt" className="text-xs">Prompt</Label>
-          <Textarea
-            id="r-prompt"
-            rows={3}
-            placeholder="Post a concise daily digest: the current leaderboard top 10 and any campaign changes since yesterday."
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            disabled={creating}
-            className="text-xs"
-          />
-        </div>
-
-        <div>
+      <div className="rounded-md border border-dashed p-3">
+        <RoutineFields tenantId={id} value={form} onChange={patch} disabled={creating} />
+        <div className="mt-3">
           <Button type="button" onClick={create} disabled={creating}>
             {creating && <Loader2Icon className="animate-spin" data-icon="inline-start" />}
             Add routine

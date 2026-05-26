@@ -356,7 +356,7 @@ export function DeleteAgentButton({ id, name }: { id: string; name: string }) {
         throw new Error(b?.error ?? `${res.status}`);
       }
       toast.success('Deleted');
-      router.push('/settings/agents');
+      router.push('/agents');
     } catch (err) {
       toast.error(`Failed: ${(err as Error).message}`);
       setDeleting(false);

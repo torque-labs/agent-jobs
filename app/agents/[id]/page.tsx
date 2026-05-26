@@ -4,7 +4,9 @@ import { Badge } from '@/components/ui/badge';
 import { getTenant, toPublicTenant } from '@/lib/tenants';
 import { getUsageSummary } from '@/lib/tenant-usage';
 import { listRoutinesForTenant } from '@/lib/tenant-routines';
+import { listEntries } from '@/lib/tenant-knowledge';
 import { RoutinesSection, type RoutineView } from './routines';
+import { KnowledgeSection, type KnowledgeView } from './knowledge';
 import {
   AgentControls,
   ChannelEnrollment,
@@ -26,17 +28,24 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
     id: r.id,
     name: r.name,
     cron: r.cron,
+    prompt: r.prompt,
     channel: r.channel,
     enabled: r.enabled,
     last_run_at: r.last_run_at ? new Date(r.last_run_at).toISOString() : null,
     last_status: r.last_status,
+  }));
+  const knowledge: KnowledgeView[] = (await listEntries(t.id).catch(() => [])).map((e) => ({
+    id: e.id,
+    title: e.title,
+    content: e.content,
+    source_url: e.source_url,
   }));
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <div>
-          <Link href="/settings/agents" className="text-xs text-muted-foreground hover:underline">
+          <Link href="/agents" className="text-xs text-muted-foreground hover:underline">
             ← Agents
           </Link>
           <h2 className="font-heading text-lg font-semibold">
@@ -105,6 +114,8 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
       />
 
       <RoutinesSection id={t.id} initial={routines} />
+
+      <KnowledgeSection id={t.id} initial={knowledge} />
 
       <TestChat id={t.id} />
 

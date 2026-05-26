@@ -39,6 +39,7 @@ import {
 import { fetchLeaderboard } from './torque-api';
 import { getTenant } from './tenants';
 import { recordUsage } from './tenant-usage';
+import { countEntries, searchKnowledge } from './tenant-knowledge';
 import { loadHistory, saveMessages } from './conversation';
 import type { Tenant } from './types';
 
@@ -82,7 +83,7 @@ export type TenantTurnResult = {
 // REST API with the tenant's scoped token. Used where the MCP tool is broken;
 // currently get_leaderboard (see lib/torque-api.ts). Gated like the MCP tools:
 // an explicit allow-list, checked at schema-build and at call time.
-const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set(['get_leaderboard']);
+const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set(['get_leaderboard', 'search_knowledge']);
 function isBuiltinTool(toolName: string): boolean {
   return BUILTIN_TOOL_NAMES.has(toolName);
 }
@@ -110,6 +111,22 @@ const BUILTIN_TOOLS: McpToolDef[] = [
   },
 ];
 
+// Exposed only when the tenant has knowledge-base entries (see runTenantTurn).
+const SEARCH_KNOWLEDGE_TOOL: McpToolDef = {
+  serverName: 'builtin',
+  toolName: 'search_knowledge',
+  exposedName: 'search_knowledge',
+  description:
+    "Search this project's knowledge base (docs / FAQ / playbook) for relevant information. " +
+    'Use this for product, how-to, onboarding, or support questions about the project that the ' +
+    'Torque metrics tools do not answer. Pass a natural-language query.',
+  inputSchema: {
+    type: 'object',
+    properties: { query: { type: 'string', description: 'What to look up.' } },
+    required: ['query'],
+  },
+};
+
 /** Run a built-in tool. Never throws — returns a string for the model. */
 async function runBuiltinTool(
   toolName: string,
@@ -124,6 +141,11 @@ async function runBuiltinTool(
     const limit = typeof args.limit === 'number' ? args.limit : 50;
     return fetchLeaderboard(tenant.torque_mcp_token, tenant.torque_project_id, offerId, limit);
   }
+  if (toolName === 'search_knowledge') {
+    const query = typeof args.query === 'string' ? args.query : '';
+    if (!query) return '[search_knowledge requires a query]';
+    return searchKnowledge(tenant.id, query);
+  }
   return `[unknown builtin tool: ${toolName}]`;
 }
 
@@ -136,6 +158,7 @@ function buildSystemPrompt(
   tenant: Tenant,
   ctx: ConversationContext,
   ingesterEnabled: boolean,
+  hasKnowledge: boolean,
 ): string {
   const lines = [
     '',
@@ -156,6 +179,13 @@ function buildSystemPrompt(
         `enrich answers about ${tenant.display_name} (e.g. its own token's swap/holder activity). ` +
         'Never produce analyses, comparisons, or reports about unrelated tokens or other Torque ' +
         'projects/customers, and never write to it.',
+    );
+  }
+  if (hasKnowledge) {
+    lines.push(
+      `You also have a knowledge base for ${tenant.display_name} (docs / FAQ / playbook). For ` +
+        'product, how-to, onboarding, or support questions, call the `search_knowledge` tool and ' +
+        'answer from what it returns.',
     );
   }
   lines.push(
@@ -224,7 +254,8 @@ export async function runTenantTurn(
 
   const toolsUsed: string[] = [];
   try {
-    const systemPrompt = buildSystemPrompt(tenant, ctx, Boolean(ingesterSession));
+    const hasKnowledge = (await countEntries(tenant.id).catch(() => 0)) > 0;
+    const systemPrompt = buildSystemPrompt(tenant, ctx, Boolean(ingesterSession), hasKnowledge);
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
     ];
@@ -248,6 +279,7 @@ export async function runTenantTurn(
       ...session.tools,
       ...(ingesterSession ? ingesterSession.tools : []),
       ...BUILTIN_TOOLS,
+      ...(hasKnowledge ? [SEARCH_KNOWLEDGE_TOOL] : []),
     ].filter((t) => isAllowed(t.serverName, t.toolName));
     const toolsParam: ChatCompletionTool[] | undefined = exposedTools.length > 0
       ? exposedTools.map((t) => ({

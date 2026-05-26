@@ -89,7 +89,7 @@ export default async function AgentsPage() {
               {agents.map((a) => (
                 <TableRow key={a.id} className="cursor-pointer">
                   <TableCell className="font-mono text-xs">
-                    <Link href={`/settings/agents/${a.id}`} className="hover:underline">
+                    <Link href={`/agents/${a.id}`} className="hover:underline">
                       {a.slug}
                     </Link>
                   </TableCell>
