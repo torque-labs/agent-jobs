@@ -146,6 +146,19 @@ export function isRenderTool(toolName: string): boolean {
   return RENDER_TOOLS.has(toolName);
 }
 
+// `analysis` MCP server — local script (mcp-servers/analysis/index.mjs) bridging
+// jobs to the render service's sandboxed analysis path (POST /v1/analyze). The
+// model writes the stats; the service runs them in an isolated sandbox and lands
+// provenance-tracked results — the LLM never hand-types a figure. Read/compute
+// only (no customer-data mutation), so it's on the allow-list. Fail-closed.
+export const ANALYSIS_TOOLS: ReadonlySet<string> = new Set([
+  'run_analysis',
+]);
+
+export function isAnalysisTool(toolName: string): boolean {
+  return ANALYSIS_TOOLS.has(toolName);
+}
+
 // OpenRouter caps tool names to 64 chars and disallows certain chars.
 const SAFE_NAME = /[^a-zA-Z0-9_-]/g;
 function makeExposedName(serverName: string, toolName: string): string {
@@ -204,6 +217,19 @@ function buildSpecs(): ServerSpec[] {
     });
   } else {
     console.warn('[mcp] RENDER_SERVICE_URL / DIGEST_API_KEY not set — render MCP will not be loaded');
+  }
+
+  // `analysis` — same local-script pattern as `render`; bridges to /v1/analyze.
+  if (renderUrl && digestKey) {
+    specs.push({
+      name: 'analysis',
+      command: 'node',
+      args: [resolve(process.cwd(), 'mcp-servers/analysis/index.mjs')],
+      env: {
+        RENDER_SERVICE_URL: renderUrl,
+        DIGEST_API_KEY: digestKey,
+      },
+    });
   }
 
   return specs;
