@@ -428,7 +428,7 @@ export async function createTemplate(input: CreateTemplateInput): Promise<Report
     INSERT INTO report_templates (id, name, account, layout, recipe, fetch, prior_interval, default_cron, channel)
     VALUES (
       ${input.id}, ${input.name}, ${input.account}, ${input.layout},
-      ${sql.json(input.recipe)}, ${sql.json(input.fetch)},
+      ${sql.json(input.recipe as unknown as Parameters<typeof sql.json>[0])}, ${sql.json(input.fetch as unknown as Parameters<typeof sql.json>[0])},
       ${input.prior_interval}, ${input.default_cron ?? null}, ${input.channel}
     )
     ON CONFLICT (id) DO UPDATE SET
