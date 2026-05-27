@@ -145,6 +145,25 @@ export function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS run_feedback_job_id_idx
         ON run_feedback(job_id, created_at DESC)
     `;
+
+    // Report templates — a markdown brief compiled (by the author-report-recipe
+    // skill) into a recipe {cells, spec}. Uploaded here, then selected + scheduled
+    // as a job via createJobFromTemplate. `recipe` is the gate-validated unit;
+    // `fetch` carries the data-binding SQL (now/prior/signups).
+    await sql`
+      CREATE TABLE IF NOT EXISTS report_templates (
+        id             TEXT PRIMARY KEY,
+        name           TEXT NOT NULL,
+        account        TEXT NOT NULL DEFAULT '',
+        layout         TEXT NOT NULL DEFAULT 'report',
+        recipe         JSONB NOT NULL,
+        fetch          JSONB NOT NULL DEFAULT '{}'::jsonb,
+        prior_interval TEXT NOT NULL DEFAULT '24 hours',
+        default_cron   TEXT,
+        channel        TEXT NOT NULL DEFAULT 'telegram',
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+      )
+    `;
     await sql`
       CREATE INDEX IF NOT EXISTS run_feedback_run_id_idx
         ON run_feedback(run_id, created_at DESC)
@@ -375,6 +394,61 @@ export async function getJob(id: string): Promise<Job | null> {
 export async function listJobs(): Promise<Job[]> {
   const rows = await sql<JobRow[]>`SELECT * FROM jobs ORDER BY created_at DESC`;
   return rows.map(mapJob);
+}
+
+// ---------------------------------------------------------------------------
+// Report templates
+// ---------------------------------------------------------------------------
+export type ReportTemplate = {
+  id: string;
+  name: string;
+  account: string;
+  layout: string;
+  recipe: { cells: { code: string }[]; spec: Record<string, unknown> };
+  fetch: { now_sql?: string; prior_sql?: string; signups_sql?: string };
+  prior_interval: string;
+  default_cron: string | null;
+  channel: string;
+  created_at: Date;
+};
+type ReportTemplateRow = Omit<ReportTemplate, 'default_cron'> & { default_cron: string | null };
+
+function mapTemplate(r: ReportTemplateRow): ReportTemplate {
+  return {
+    id: r.id, name: r.name, account: r.account, layout: r.layout,
+    recipe: r.recipe, fetch: r.fetch ?? {}, prior_interval: r.prior_interval,
+    default_cron: r.default_cron ?? null, channel: r.channel, created_at: r.created_at,
+  };
+}
+
+export type CreateTemplateInput = Omit<ReportTemplate, 'created_at'>;
+
+export async function createTemplate(input: CreateTemplateInput): Promise<ReportTemplate> {
+  const rows = await sql<ReportTemplateRow[]>`
+    INSERT INTO report_templates (id, name, account, layout, recipe, fetch, prior_interval, default_cron, channel)
+    VALUES (
+      ${input.id}, ${input.name}, ${input.account}, ${input.layout},
+      ${sql.json(input.recipe)}, ${sql.json(input.fetch)},
+      ${input.prior_interval}, ${input.default_cron ?? null}, ${input.channel}
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name, account = EXCLUDED.account, layout = EXCLUDED.layout,
+      recipe = EXCLUDED.recipe, fetch = EXCLUDED.fetch,
+      prior_interval = EXCLUDED.prior_interval, default_cron = EXCLUDED.default_cron,
+      channel = EXCLUDED.channel
+    RETURNING *
+  `;
+  return mapTemplate(rows[0]);
+}
+
+export async function getTemplate(id: string): Promise<ReportTemplate | null> {
+  const rows = await sql<ReportTemplateRow[]>`SELECT * FROM report_templates WHERE id = ${id} LIMIT 1`;
+  return rows[0] ? mapTemplate(rows[0]) : null;
+}
+
+export async function listTemplates(): Promise<ReportTemplate[]> {
+  const rows = await sql<ReportTemplateRow[]>`SELECT * FROM report_templates ORDER BY created_at DESC`;
+  return rows.map(mapTemplate);
 }
 
 export type UpdateJobInput = Partial<{
