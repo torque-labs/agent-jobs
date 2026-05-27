@@ -135,7 +135,11 @@ export async function ensureBootstrapKey(plain: string, scopes: string[]): Promi
   const existing = await sql<{ id: string }[]>`
     SELECT id FROM api_keys WHERE key_hash = ${hash} AND revoked_at IS NULL LIMIT 1
   `;
-  if (existing[0]) return false; // already provisioned
+  if (existing[0]) {
+    // already provisioned — keep scopes in sync with the configured set
+    await sql`UPDATE api_keys SET scopes = ${sql.json(scopes)} WHERE id = ${existing[0].id}`;
+    return false;
+  }
   await sql`
     INSERT INTO api_keys (id, name, key_hash, key_prefix, scopes, created_by)
     VALUES (${newKeyId()}, ${'bootstrap'}, ${hash}, ${plain.slice(0, 12)}, ${sql.json(scopes)}, ${'bootstrap'})
