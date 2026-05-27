@@ -16,6 +16,8 @@ const stepSchema = z.object({
   tools_allowed: z.array(z.string()).nullable(),
   retries: z.number().int().nonnegative().default(1),
   timeout_seconds: z.number().int().positive().default(600),
+  approval_required: z.boolean().optional(),
+  use_feedback: z.boolean().optional(),
 });
 
 const createJobBodySchema = z.object({
