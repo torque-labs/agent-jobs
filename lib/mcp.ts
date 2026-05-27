@@ -258,6 +258,20 @@ function buildSpecs(): ServerSpec[] {
   return specs;
 }
 
+// Boot-safety: never let a slow/unreachable MCP (e.g. the ingester connecting to a
+// remote DB) block initMcp — which is awaited before the HTTP server listens. A
+// timeout rejects -> caught by initMcp's per-spec try/catch -> scheduleRestart (non-fatal).
+const MCP_START_TIMEOUT_MS = Number(process.env.MCP_START_TIMEOUT_MS ?? 20000);
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      const t = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      if (typeof t === 'object' && t && 'unref' in t) (t as { unref: () => void }).unref();
+    }),
+  ]);
+}
+
 async function startServer(managed: Managed): Promise<void> {
   const { spec } = managed;
   const transport = new StdioClientTransport({
@@ -286,8 +300,8 @@ async function startServer(managed: Managed): Promise<void> {
     console.error(`[mcp] ${spec.name} transport error:`, err);
   };
 
-  await client.connect(transport);
-  const listed = await client.listTools();
+  await withTimeout(client.connect(transport), MCP_START_TIMEOUT_MS, `${spec.name} connect`);
+  const listed = await withTimeout(client.listTools(), MCP_START_TIMEOUT_MS, `${spec.name} listTools`);
   const tools: McpToolDef[] = (listed.tools ?? [])
     .filter((t) => !spec.allow || spec.allow.has(t.name))
     .map((t) => ({
