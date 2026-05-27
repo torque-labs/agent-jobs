@@ -38,12 +38,13 @@ async function main() {
   // 2. Spawn MCP subprocesses (torque, supabase) so tool steps can drive them.
   //    Non-fatal: individual server start failures schedule retries; the HTTP
   //    server still comes up so operators can debug via the UI.
-  try {
-    await initMcp();
-    console.log('[server] mcp initialized');
-  } catch (err) {
-    console.error('[server] initMcp failed (continuing without MCP):', err);
-  }
+  // Non-blocking: MCP startup connects to remote services (incl. the ingester DB);
+  // do NOT let it delay the HTTP listen / health check (a slow connect previously
+  // pushed boot past the deploy health window). Per-server timeout + restart inside
+  // initMcp handle slowness/failure; tool steps run on cron/trigger, after readiness.
+  initMcp()
+    .then(() => console.log('[server] mcp initialized'))
+    .catch((err) => console.error('[server] initMcp failed (continuing without MCP):', err));
 
   // 3. Seed default jobs if the jobs table is empty. Non-fatal: a seed
   //    failure (e.g. a constraint we didn't anticipate) shouldn't keep the
