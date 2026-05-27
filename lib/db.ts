@@ -157,7 +157,7 @@ export function initSchema(): Promise<void> {
         account        TEXT NOT NULL DEFAULT '',
         layout         TEXT NOT NULL DEFAULT 'report',
         recipe         JSONB NOT NULL,
-        fetch          JSONB NOT NULL DEFAULT '{}'::jsonb,
+        "fetch"        JSONB NOT NULL DEFAULT '{}'::jsonb,
         prior_interval TEXT NOT NULL DEFAULT '24 hours',
         default_cron   TEXT,
         channel        TEXT NOT NULL DEFAULT 'telegram',
@@ -425,7 +425,7 @@ export type CreateTemplateInput = Omit<ReportTemplate, 'created_at'>;
 
 export async function createTemplate(input: CreateTemplateInput): Promise<ReportTemplate> {
   const rows = await sql<ReportTemplateRow[]>`
-    INSERT INTO report_templates (id, name, account, layout, recipe, fetch, prior_interval, default_cron, channel)
+    INSERT INTO report_templates (id, name, account, layout, recipe, "fetch", prior_interval, default_cron, channel)
     VALUES (
       ${input.id}, ${input.name}, ${input.account}, ${input.layout},
       ${sql.json(input.recipe as unknown as Parameters<typeof sql.json>[0])}, ${sql.json(input.fetch as unknown as Parameters<typeof sql.json>[0])},
@@ -433,7 +433,7 @@ export async function createTemplate(input: CreateTemplateInput): Promise<Report
     )
     ON CONFLICT (id) DO UPDATE SET
       name = EXCLUDED.name, account = EXCLUDED.account, layout = EXCLUDED.layout,
-      recipe = EXCLUDED.recipe, fetch = EXCLUDED.fetch,
+      recipe = EXCLUDED.recipe, "fetch" = EXCLUDED."fetch",
       prior_interval = EXCLUDED.prior_interval, default_cron = EXCLUDED.default_cron,
       channel = EXCLUDED.channel
     RETURNING *
