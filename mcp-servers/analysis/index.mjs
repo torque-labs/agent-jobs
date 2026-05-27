@@ -108,7 +108,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       timeout_s: args.timeout_s ?? 20,
       publish: false,
     });
-    return { content: [{ type: 'text', text: JSON.stringify(json) }] };
+    const slim = {
+      registered: json.registered,
+      errors: json.errors,
+      cells: json.cells,
+      title: json.title,
+      markdown: json.markdown,
+      // pdf_base64 / html / store intentionally omitted — too large to feed back
+      // into the model context (caused provider 400s); the markdown is the deliverable.
+    };
+    return { content: [{ type: 'text', text: JSON.stringify(slim) }] };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { isError: true, content: [{ type: 'text', text: `[analysis error] ${message}` }] };
