@@ -34,6 +34,9 @@ type ServerSpec = {
   args: string[];
   // Env vars to inject on top of the inherited PATH-style defaults.
   env: Record<string, string>;
+  // Optional read-only tool allow-list. When set, startServer registers ONLY
+  // these tools from the server (defense-in-depth on top of a read-only DB role).
+  allow?: ReadonlySet<string>;
 };
 
 type Managed = {
@@ -82,6 +85,9 @@ function state(): GlobalState {
 // tool appears it must be added here explicitly (fail-closed by default).
 export const TORQUE_READONLY_TOOLS: ReadonlySet<string> = new Set([
   'ask_torque',
+  // session-scoping only (no data mutation) — needed so project-scoped reads
+  // don't stall waiting for an active project. Sets session state, writes nothing.
+  'set_active_project',
   'list_projects',
   'get_epoch_aggregate_stats',
   'get_epoch_leaderboard',
@@ -232,6 +238,23 @@ function buildSpecs(): ServerSpec[] {
     });
   }
 
+  // `ingester` — the raw on-chain indexer DB (mcp-postgres against a SHARED,
+  // read-only connection URL). Loaded for job steps when the URL is configured;
+  // tools filtered to the read-only allow-list (query_data / execute_raw_query).
+  // The DB role itself is read-only, so this is defense-in-depth, not the only guard.
+  const ingesterUrl = process.env.TORQUE_INGESTER_READONLY_URL;
+  if (ingesterUrl) {
+    specs.push({
+      name: 'ingester',
+      command: 'npx',
+      args: ['-y', MCP_POSTGRES_PKG],
+      env: { DATABASE_URL: ingesterUrl },
+      allow: TORQUE_INGESTER_READONLY_TOOLS,
+    });
+  } else {
+    console.warn('[mcp] TORQUE_INGESTER_READONLY_URL not set — ingester MCP will not be loaded');
+  }
+
   return specs;
 }
 
@@ -265,7 +288,9 @@ async function startServer(managed: Managed): Promise<void> {
 
   await client.connect(transport);
   const listed = await client.listTools();
-  const tools: McpToolDef[] = (listed.tools ?? []).map((t) => ({
+  const tools: McpToolDef[] = (listed.tools ?? [])
+    .filter((t) => !spec.allow || spec.allow.has(t.name))
+    .map((t) => ({
     serverName: spec.name,
     toolName: t.name,
     exposedName: makeExposedName(spec.name, t.name),
