@@ -58,7 +58,7 @@ async function main() {
   //     the initial jobs:write key can exist without manual DB access. Non-fatal.
   if (process.env.BOOTSTRAP_ADMIN_KEY) {
     try {
-      const created = await ensureBootstrapKey(process.env.BOOTSTRAP_ADMIN_KEY, ['jobs:read', 'jobs:write']);
+      const created = await ensureBootstrapKey(process.env.BOOTSTRAP_ADMIN_KEY, ['jobs:read', 'jobs:write', 'runs:read', 'runs:trigger']);
       console.log(`[server] bootstrap api key ${created ? 'provisioned' : 'already present'} (jobs:read,jobs:write)`);
     } catch (err) {
       console.error('[server] bootstrap key failed (continuing):', err);
