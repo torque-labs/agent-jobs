@@ -124,6 +124,25 @@ export async function createApiKey(
   };
 }
 
+/**
+ * Idempotently ensure an API key with the given plain value + scopes exists.
+ * Used once at boot from BOOTSTRAP_ADMIN_KEY so the first key can be provisioned
+ * via env (no manual DB access). Never logs or returns the plain key.
+ */
+export async function ensureBootstrapKey(plain: string, scopes: string[]): Promise<boolean> {
+  await ensureApiKeySchema();
+  const hash = sha256(plain);
+  const existing = await sql<{ id: string }[]>`
+    SELECT id FROM api_keys WHERE key_hash = ${hash} AND revoked_at IS NULL LIMIT 1
+  `;
+  if (existing[0]) return false; // already provisioned
+  await sql`
+    INSERT INTO api_keys (id, name, key_hash, key_prefix, scopes, created_by)
+    VALUES (${newKeyId()}, ${'bootstrap'}, ${hash}, ${plain.slice(0, 12)}, ${sql.json(scopes)}, ${'bootstrap'})
+  `;
+  return true;
+}
+
 export type VerifiedApiKey = {
   id: string;
   scopes: string[];
