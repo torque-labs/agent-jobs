@@ -15,6 +15,7 @@ import { createServer } from 'node:http';
 import { parse } from 'node:url';
 import next from 'next';
 import { createJob, initSchema, listJobs } from './lib/db';
+import { ensureBootstrapKey } from './lib/api-keys';
 import { initCron } from './lib/cron';
 import { initMcp, shutdownMcp } from './lib/mcp';
 import { TRUMP_DIGEST_JOB } from './seed/torque-digest';
@@ -51,6 +52,17 @@ async function main() {
     await seedIfEmpty();
   } catch (err) {
     console.error('[server] seedIfEmpty failed (continuing without seed):', err);
+  }
+
+  // 3b. Provision the first API key from env if BOOTSTRAP_ADMIN_KEY is set, so
+  //     the initial jobs:write key can exist without manual DB access. Non-fatal.
+  if (process.env.BOOTSTRAP_ADMIN_KEY) {
+    try {
+      const created = await ensureBootstrapKey(process.env.BOOTSTRAP_ADMIN_KEY, ['jobs:read', 'jobs:write']);
+      console.log(`[server] bootstrap api key ${created ? 'provisioned' : 'already present'} (jobs:read,jobs:write)`);
+    } catch (err) {
+      console.error('[server] bootstrap key failed (continuing):', err);
+    }
   }
 
   // 4. Register cron schedules. Failures are logged but non-fatal — HTTP
