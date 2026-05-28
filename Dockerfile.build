@@ -30,7 +30,8 @@ RUN pnpm exec tsc \
       --moduleResolution node \
       --esModuleInterop \
       --skipLibCheck \
-      --resolveJsonModule
+      --resolveJsonModule \
+      --jsx react-jsx
 
 # ---- Stage 3: runtime ----
 FROM node:22-alpine AS runtime
