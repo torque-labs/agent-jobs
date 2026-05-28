@@ -38,6 +38,25 @@ async function buildRenderer(): Promise<(spec: ChartSpec) => Promise<Buffer>> {
   const { Chart, registerables } = await import('chart.js');
   Chart.register(...registerables);
 
+  // Chart.js clears the canvas during render() — so a pre-render fillRect gets
+  // wiped, leaving a transparent (i.e. Telegram-white) background that hides
+  // every Torque-dark-mode text color we set. This plugin paints the dark bg
+  // INSIDE Chart.js's draw lifecycle via globalCompositeOperation, so the
+  // brand palette stays legible. Registered once at builder-init time.
+  Chart.register({
+    id: 'torqueBgPlugin',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    beforeDraw(chart: any) {
+      const c = chart?.canvas?.getContext?.('2d');
+      if (!c) return;
+      c.save();
+      c.globalCompositeOperation = 'destination-over';
+      c.fillStyle = TORQUE_BRAND.bgDark;
+      c.fillRect(0, 0, chart.width, chart.height);
+      c.restore();
+    },
+  });
+
   // System sans-serif is fine for Alpine; @napi-rs/canvas ships with a default.
   // If we ever ship a brand font (e.g. Instrument Sans), drop the .ttf into the
   // image and register it here.
@@ -51,8 +70,10 @@ async function buildRenderer(): Promise<(spec: ChartSpec) => Promise<Buffer>> {
       }
     }
     const canvas = createCanvas(WIDTH, HEIGHT);
-    // Brand dark background (canvas is transparent by default — paint it first).
     const ctx = canvas.getContext('2d');
+    // Belt + braces: also paint the dark bg directly on the canvas so even if
+    // the plugin ever doesn't fire (Chart.js version skew, plugin filtered),
+    // we still get a Torque-dark base instead of transparent.
     ctx.fillStyle = TORQUE_BRAND.bgDark;
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
@@ -72,22 +93,38 @@ async function buildRenderer(): Promise<(spec: ChartSpec) => Promise<Buffer>> {
       };
     });
 
+    // Truncate long X-axis labels (e.g. raw wallet addresses) so they fit and
+    // don't overlap. The agent is told to do this client-side via the soul +
+    // tool description, but defend against lapses here.
+    const xLabels = spec.labels.map((l) => (l.length > 14 ? `${l.slice(0, 4)}…${l.slice(-4)}` : l));
+    const title = spec.title?.trim() || `${spec.series[0].label} — ${spec.type}`;
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const chart = new Chart(ctx as any, {
       type: spec.type,
-      data: { labels: spec.labels, datasets },
+      data: { labels: xLabels, datasets },
       options: {
         responsive: false,
         animation: false,
         devicePixelRatio: 2,
+        layout: { padding: { top: 8, right: 24, bottom: 8, left: 8 } },
         plugins: {
           title: {
-            display: Boolean(spec.title),
-            text: spec.title,
+            display: true,
+            text: title,
             color: TORQUE_BRAND.textOnDark,
-            font: { size: 22, weight: 'bold' },
-            padding: { top: 20, bottom: 20 },
+            font: { size: 26, weight: 'bold' },
+            padding: { top: 20, bottom: 24 },
           },
+          subtitle: spec.unit
+            ? {
+                display: true,
+                text: `(${spec.unit})`,
+                color: TORQUE_BRAND.textOnDarkMuted,
+                font: { size: 14 },
+                padding: { bottom: 12 },
+              }
+            : undefined,
           legend: {
             display: spec.series.length > 1,
             labels: { color: TORQUE_BRAND.textOnDark, font: { size: 14 } },
@@ -96,17 +133,22 @@ async function buildRenderer(): Promise<(spec: ChartSpec) => Promise<Buffer>> {
         },
         scales: {
           x: {
-            ticks: { color: TORQUE_BRAND.textOnDarkMuted, font: { size: 12 } },
+            ticks: {
+              color: TORQUE_BRAND.textOnDarkMuted,
+              font: { size: 13 },
+              // Rotate long-label runs so they don't overlap.
+              maxRotation: xLabels.length > 6 ? 35 : 0,
+              minRotation: xLabels.length > 6 ? 35 : 0,
+              autoSkip: false,
+            },
             grid: { color: TORQUE_BRAND.gridOnDark },
             border: { color: TORQUE_BRAND.gridOnDark },
           },
           y: {
             ticks: {
               color: TORQUE_BRAND.textOnDarkMuted,
-              font: { size: 12 },
-              callback: (v: number | string) =>
-                spec.unit ? `${formatNum(Number(v))}${spec.unit === '$' ? '' : ` ${spec.unit}`}`
-                          : formatNum(Number(v)),
+              font: { size: 13 },
+              callback: (v: number | string) => formatNum(Number(v)),
             },
             grid: { color: TORQUE_BRAND.gridOnDark },
             border: { color: TORQUE_BRAND.gridOnDark },
