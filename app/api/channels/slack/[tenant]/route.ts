@@ -153,7 +153,8 @@ async function handleSlackTurn(tenant: Tenant, event: SlackMessageEvent): Promis
   }
 }
 
-const SLACK_HEARTBEAT_MS = 18_000;
+// Only fire on genuinely slow queries (>1 min); medium-fast turns stay silent.
+const SLACK_HEARTBEAT_MS = 60_000;
 
 async function sendSlackHeartbeat(
   tenant: Tenant,

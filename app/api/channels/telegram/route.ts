@@ -164,7 +164,9 @@ async function sendTelegramReply(
  * optional onHeartbeat callback so the caller can delete it once the real
  * reply is ready (avoids leaving the placeholder cluttering the thread).
  */
-const TYPING_HEARTBEAT_MS = 18_000;
+// Only fire heartbeat on genuinely slow queries (>1 min). Most turns land in
+// 5-30s; firing earlier produces noise on medium-fast replies.
+const TYPING_HEARTBEAT_MS = 60_000;
 
 async function withTyping<T>(
   botToken: string,
