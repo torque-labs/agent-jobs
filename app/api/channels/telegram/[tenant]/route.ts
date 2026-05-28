@@ -93,17 +93,30 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
   const speaker = message?.from?.first_name;
   // Ack now; run the turn + reply detached (slow turn must not blow the timeout).
   void (async () => {
+    let heartbeatId: number | undefined;
     try {
-      const result = await withTyping(tgToken, chatId, () =>
-        runTenantTurn(tenant.id, turnText, {
-          conversationId: `telegram:${chatId}`,
-          speaker,
-          persist: true,
-        }),
+      const result = await withTyping(
+        tgToken,
+        chatId,
+        () =>
+          runTenantTurn(tenant.id, turnText, {
+            conversationId: `telegram:${chatId}`,
+            speaker,
+            persist: true,
+          }),
+        (id) => {
+          heartbeatId = id;
+        },
       );
+      if (heartbeatId !== undefined && tgToken) {
+        await deleteTelegramMessage(tgToken, chatId, heartbeatId);
+      }
       await sendTelegramReply(tenant, chatId, result.reply, result.attachments);
     } catch (err) {
       console.error(`[telegram/${slug}] turn failed:`, err instanceof Error ? err.name : 'error');
+      if (heartbeatId !== undefined && tgToken) {
+        await deleteTelegramMessage(tgToken, chatId, heartbeatId).catch(() => {});
+      }
       await sendTelegramReply(
         tenant,
         chatId,
@@ -160,18 +173,25 @@ async function sendTelegramReply(
 }
 
 /**
- * Show "typing…" while the turn runs (ping sendChatAction now + every ~4s) and
- * fire a one-shot "still working" heartbeat at HEARTBEAT_MS for the slow-tool
- * case (ingester SQL / ask_torque). Typing alone is easy to miss on mobile.
+ * Show "typing…" while the turn runs and fire a one-shot heartbeat at
+ * HEARTBEAT_MS. The heartbeat's message_id is reported via the optional
+ * onHeartbeat callback so the caller can delete it once the real reply
+ * is ready (no placeholder left behind in the thread).
  */
 const TYPING_HEARTBEAT_MS = 18_000;
 
-async function withTyping<T>(botToken: string | undefined, chatId: number, fn: () => Promise<T>): Promise<T> {
+async function withTyping<T>(
+  botToken: string | undefined,
+  chatId: number,
+  fn: () => Promise<T>,
+  onHeartbeat?: (messageId: number) => void,
+): Promise<T> {
   if (!botToken || process.env.TELEGRAM_SEND_DISABLED === 'true') return fn();
   void sendChatAction(botToken, chatId);
   const iv = setInterval(() => void sendChatAction(botToken, chatId), 4000);
-  const heartbeat = setTimeout(() => {
-    void sendHeartbeat(botToken, chatId);
+  const heartbeat = setTimeout(async () => {
+    const id = await sendHeartbeat(botToken, chatId);
+    if (id !== null && onHeartbeat) onHeartbeat(id);
   }, TYPING_HEARTBEAT_MS);
   try {
     return await fn();
@@ -181,15 +201,32 @@ async function withTyping<T>(botToken: string | undefined, chatId: number, fn: (
   }
 }
 
-async function sendHeartbeat(botToken: string, chatId: number): Promise<void> {
+async function sendHeartbeat(botToken: string, chatId: number): Promise<number | null> {
   try {
-    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
         text: '🔎 still working on this — heavier queries can take a few minutes…',
       }),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => null)) as { result?: { message_id?: number } } | null;
+    return data?.result?.message_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Delete a Telegram message (best-effort cleanup of the heartbeat). */
+async function deleteTelegramMessage(botToken: string, chatId: number, messageId: number): Promise<void> {
+  if (process.env.TELEGRAM_SEND_DISABLED === 'true') return;
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/deleteMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
     });
   } catch {
     // best-effort

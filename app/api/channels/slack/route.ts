@@ -93,14 +93,24 @@ export async function POST(req: Request) {
 }
 
 async function handleSlackTurn(tenant: Tenant, event: SlackMessageEvent): Promise<void> {
+  let heartbeatTs: string | undefined;
+  // Schedule the heartbeat. Slack has no typing-indicator equivalent for bots,
+  // so this is the only feedback a user sees during a slow turn. Delete on
+  // reply so the placeholder doesn't clutter the thread.
+  const heartbeatTimer = setTimeout(async () => {
+    const ts = await sendSlackHeartbeat(tenant, event.channel!, event.thread_ts ?? event.ts);
+    if (ts) heartbeatTs = ts;
+  }, SLACK_HEARTBEAT_MS);
   try {
     const result = await runTenantTurn(tenant.id, event.text!, {
-      // Memory key: channel (+ thread when threaded) so it's stable across
-      // messages. The reply still posts in-thread via thread_ts/ts below.
       conversationId: `slack:${event.channel}${event.thread_ts ? ':' + event.thread_ts : ''}`,
       speaker: event.user,
       persist: true,
     });
+    clearTimeout(heartbeatTimer);
+    if (heartbeatTs) {
+      await deleteSlackMessage(tenant, event.channel!, heartbeatTs);
+    }
     await postSlackReply(
       tenant,
       event.channel!,
@@ -109,13 +119,71 @@ async function handleSlackTurn(tenant: Tenant, event: SlackMessageEvent): Promis
       result.attachments,
     );
   } catch (err) {
+    clearTimeout(heartbeatTimer);
     console.error(`[slack/shared] turn failed for tenant ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`);
+    if (heartbeatTs) {
+      await deleteSlackMessage(tenant, event.channel!, heartbeatTs).catch(() => {});
+    }
     await postSlackReply(
       tenant,
       event.channel!,
       'Sorry — I hit an error. Please try again in a moment.',
       event.thread_ts ?? event.ts,
     ).catch(() => {});
+  }
+}
+
+const SLACK_HEARTBEAT_MS = 18_000;
+
+/**
+ * Slack has no typing-indicator equivalent for bots, so this is the user's
+ * only signal that a slow turn is still running. Posts a chat.postMessage
+ * (threaded if the original was) and returns its ts so the caller can delete
+ * it once the real reply is ready.
+ */
+async function sendSlackHeartbeat(
+  tenant: Tenant,
+  channel: string,
+  threadTs?: string,
+): Promise<string | null> {
+  const botToken = tenant.channels.slack?.bot_token ?? process.env.SLACK_BOT_TOKEN;
+  if (!botToken) return null;
+  if (process.env.SLACK_SEND_DISABLED === 'true') return null;
+  try {
+    const res = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        authorization: `Bearer ${botToken}`,
+      },
+      body: JSON.stringify({
+        channel,
+        text: ':mag_right: still working on this — heavier queries can take a few minutes…',
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      }),
+    });
+    const data = (await res.json().catch(() => null)) as { ok?: boolean; ts?: string } | null;
+    return data?.ok ? (data.ts ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function deleteSlackMessage(tenant: Tenant, channel: string, ts: string): Promise<void> {
+  const botToken = tenant.channels.slack?.bot_token ?? process.env.SLACK_BOT_TOKEN;
+  if (!botToken) return;
+  if (process.env.SLACK_SEND_DISABLED === 'true') return;
+  try {
+    await fetch('https://slack.com/api/chat.delete', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json; charset=utf-8',
+        authorization: `Bearer ${botToken}`,
+      },
+      body: JSON.stringify({ channel, ts }),
+    });
+  } catch {
+    // best-effort
   }
 }
 
