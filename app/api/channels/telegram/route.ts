@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'node:crypto';
-import { runTenantTurn } from '@/lib/agent-runtime';
+import { runTenantTurn, type TurnAttachment } from '@/lib/agent-runtime';
 import { getTenantByTelegramChat } from '@/lib/tenants';
 import { gateTelegram } from '@/lib/mention';
 import { claimEvent } from '@/lib/dedupe';
+import { postTelegramPhoto } from '@/lib/channels';
 
 export const runtime = 'nodejs';
 
@@ -85,12 +86,12 @@ export async function POST(req: Request) {
           persist: true,
         }),
       );
-      await sendTelegramMessage(botToken, tenant.slug, chatId, result.reply);
+      await sendTelegramReply(botToken, tenant.slug, chatId, result.reply, result.attachments);
     } catch (err) {
       console.error(
         `[telegram/shared] turn failed for tenant ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
       );
-      await sendTelegramMessage(
+      await sendTelegramReply(
         botToken,
         tenant.slug,
         chatId,
@@ -102,17 +103,38 @@ export async function POST(req: Request) {
   return NextResponse.json({ ok: true });
 }
 
-/** Send a reply via the shared bot. Dry-run when TELEGRAM_SEND_DISABLED=true. */
-async function sendTelegramMessage(
+/**
+ * Send a reply via the shared bot. Dry-run when TELEGRAM_SEND_DISABLED=true.
+ *
+ * Attachment policy: with exactly one chart AND text ≤ 1024 chars, send it as
+ * a single sendPhoto with the text as caption (no two-message flash); else
+ * post each chart first, then the long text via sendMessage.
+ */
+async function sendTelegramReply(
   botToken: string,
   slug: string,
   chatId: number,
   text: string,
+  attachments?: TurnAttachment[],
 ): Promise<void> {
   if (process.env.TELEGRAM_SEND_DISABLED === 'true') {
-    console.log(`[telegram/shared] (send disabled) tenant ${slug} -> chat ${chatId}: ${text.slice(0, 120)}`);
+    console.log(
+      `[telegram/shared] (send disabled) tenant ${slug} -> chat ${chatId}` +
+        (attachments?.length ? ` + ${attachments.length} chart(s)` : '') +
+        `: ${text.slice(0, 120)}`,
+    );
     return;
   }
+  const charts = attachments ?? [];
+  const chatStr = String(chatId);
+  if (charts.length === 1 && text.length <= 1024) {
+    await postTelegramPhoto(botToken, chatStr, charts[0].png, charts[0].name, text);
+    return;
+  }
+  for (const a of charts) {
+    await postTelegramPhoto(botToken, chatStr, a.png, a.name);
+  }
+  if (!text) return;
   const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

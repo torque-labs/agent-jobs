@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { runTenantTurn } from '@/lib/agent-runtime';
+import { runTenantTurn, type TurnAttachment } from '@/lib/agent-runtime';
 import { getTenantForSlack } from '@/lib/tenants';
 import { gateSlack } from '@/lib/mention';
 import { claimEvent } from '@/lib/dedupe';
+import { postSlackFile } from '@/lib/channels';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -120,10 +121,16 @@ async function handleSlackTurn(tenant: Tenant, event: SlackMessageEvent): Promis
       speaker: event.user,
       persist: true,
     });
-    await postSlackMessage(tenant, event.channel!, result.reply, event.thread_ts ?? event.ts);
+    await postSlackReply(
+      tenant,
+      event.channel!,
+      result.reply,
+      event.thread_ts ?? event.ts,
+      result.attachments,
+    );
   } catch (err) {
     console.error(`[slack/${tenant.slug}] turn failed:`, err);
-    await postSlackMessage(
+    await postSlackReply(
       tenant,
       event.channel!,
       'Sorry — I hit an error. Please try again in a moment.',
@@ -149,23 +156,39 @@ function verifySlackSignature(
 }
 
 /**
- * Reply via Slack chat.postMessage.
+ * Reply on Slack (white-label per-tenant token). With one chart + no thread,
+ * bundle into files.upload with initial_comment; otherwise upload each then
+ * post the text via chat.postMessage. Threaded replies post text in-thread
+ * after the uploads (Slack's legacy files.upload doesn't accept thread_ts).
  *
- * NETWORK: hits slack.com. Stubbed-safe: if SLACK_SEND_DISABLED is set we log
- * instead of calling out.
+ * NETWORK: hits slack.com. Stubbed-safe via SLACK_SEND_DISABLED.
  */
-async function postSlackMessage(
+async function postSlackReply(
   tenant: Tenant,
   channel: string,
   text: string,
   threadTs?: string,
+  attachments?: TurnAttachment[],
 ): Promise<void> {
   const botToken = tenant.channels.slack?.bot_token;
   if (!botToken) return;
   if (process.env.SLACK_SEND_DISABLED === 'true') {
-    console.log(`[slack/${tenant.slug}] (send disabled) → ${channel}: ${text.slice(0, 120)}`);
+    console.log(
+      `[slack/${tenant.slug}] (send disabled) → ${channel}` +
+        (attachments?.length ? ` + ${attachments.length} chart(s)` : '') +
+        `: ${text.slice(0, 120)}`,
+    );
     return;
   }
+  const charts = attachments ?? [];
+  if (charts.length === 1 && !threadTs) {
+    await postSlackFile(botToken, channel, charts[0].png, charts[0].name, text);
+    return;
+  }
+  for (const a of charts) {
+    await postSlackFile(botToken, channel, a.png, a.name);
+  }
+  if (!text) return;
   const res = await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',
     headers: {

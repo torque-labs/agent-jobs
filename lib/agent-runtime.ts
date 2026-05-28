@@ -41,12 +41,15 @@ import { getTenant } from './tenants';
 import { recordUsage } from './tenant-usage';
 import { countEntries, searchKnowledge } from './tenant-knowledge';
 import { loadHistory, saveMessages } from './conversation';
+import { renderChart, type ChartSpec } from './render-chart';
 import type { Tenant } from './types';
 
 const MAX_TOOL_LOOP_ITERATIONS = 25;
 const DEFAULT_TURN_TIMEOUT_MS = 120_000;
-// Per-tool-call ceiling so a hung Torque subprocess can't stall the whole turn.
-const TOOL_CALL_TIMEOUT_MS = 60_000;
+// Per-tool-call ceiling so a hung subprocess can't stall the whole turn. Sits
+// above the per-class MCP SDK request timeouts (lib/mcp.ts) so the inner one
+// fires first with a cleaner error; this is the last-resort outer guard.
+const TOOL_CALL_TIMEOUT_MS = 200_000;
 
 /** A single prior message in the conversation, oldest first. */
 export type ConversationMessage = {
@@ -69,6 +72,14 @@ export type ConversationContext = {
   persist?: boolean;
 };
 
+/** Binary artifact (e.g. rendered chart PNG) attached to a tenant turn reply. */
+export type TurnAttachment = {
+  /** Suggested filename / caption stub. */
+  name: string;
+  /** PNG bytes. */
+  png: Buffer;
+};
+
 export type TenantTurnResult = {
   reply: string;
   tokensIn: number;
@@ -76,6 +87,8 @@ export type TenantTurnResult = {
   /** Torque tool names invoked this turn — handy for debugging/audit. */
   toolsUsed: string[];
   memoryNamespace: string;
+  /** Optional binary artifacts (rendered charts, etc.) for the channel to send. */
+  attachments?: TurnAttachment[];
 };
 
 // ---------------------------------------------------------------------------
@@ -83,7 +96,11 @@ export type TenantTurnResult = {
 // REST API with the tenant's scoped token. Used where the MCP tool is broken;
 // currently get_leaderboard (see lib/torque-api.ts). Gated like the MCP tools:
 // an explicit allow-list, checked at schema-build and at call time.
-const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set(['get_leaderboard', 'search_knowledge']);
+const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'get_leaderboard',
+  'search_knowledge',
+  'render_chart',
+]);
 function isBuiltinTool(toolName: string): boolean {
   return BUILTIN_TOOL_NAMES.has(toolName);
 }
@@ -111,6 +128,49 @@ const BUILTIN_TOOLS: McpToolDef[] = [
   },
 ];
 
+// Always exposed: lets the model render a Torque-branded chart that the
+// channel layer will attach to its reply (sendPhoto on Telegram, files.upload
+// on Slack). The model writes a structured spec; the runtime renders + captures
+// the PNG into the per-turn attachments collector. The tool returns a
+// human-readable confirmation, NOT the PNG bytes (those would blow the
+// context); the channel layer reads attachments from TenantTurnResult.
+const RENDER_CHART_TOOL: McpToolDef = {
+  serverName: 'builtin',
+  toolName: 'render_chart',
+  exposedName: 'render_chart',
+  description:
+    'Render a Torque-branded chart (PNG) that will be sent as an image in the ' +
+    "reply. Use for time-series, leaderboards, or any data better shown as a " +
+    'picture than a table. Keep it focused — one chart per turn, ≤10 data ' +
+    'points per series, ≤3 series.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      type: { type: 'string', enum: ['line', 'bar'], description: 'Chart type.' },
+      title: { type: 'string', description: 'Short chart title (≤ 60 chars).' },
+      labels: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'X-axis labels (e.g. ["Mon","Tue",…] or ["2026-05-21",…]).',
+      },
+      series: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string' },
+            data: { type: 'array', items: { type: 'number' } },
+          },
+          required: ['label', 'data'],
+        },
+        description: 'One or more series; data.length must match labels.length.',
+      },
+      unit: { type: 'string', description: 'Optional Y-axis unit suffix ("$","%","wallets"…)' },
+    },
+    required: ['type', 'title', 'labels', 'series'],
+  },
+};
+
 // Exposed only when the tenant has knowledge-base entries (see runTenantTurn).
 const SEARCH_KNOWLEDGE_TOOL: McpToolDef = {
   serverName: 'builtin',
@@ -127,11 +187,15 @@ const SEARCH_KNOWLEDGE_TOOL: McpToolDef = {
   },
 };
 
-/** Run a built-in tool. Never throws — returns a string for the model. */
+/** Run a built-in tool. Never throws — returns a string for the model.
+ *  `attachments` is a per-turn collector — render_chart pushes its PNG onto it
+ *  so the channel layer can pick it up from the turn result. Other builtins
+ *  ignore it. */
 async function runBuiltinTool(
   toolName: string,
   args: Record<string, unknown>,
   tenant: Tenant,
+  attachments: TurnAttachment[],
 ): Promise<string> {
   if (toolName === 'get_leaderboard') {
     const offerId = typeof args.recurringOfferId === 'string' ? args.recurringOfferId : '';
@@ -145,6 +209,23 @@ async function runBuiltinTool(
     const query = typeof args.query === 'string' ? args.query : '';
     if (!query) return '[search_knowledge requires a query]';
     return searchKnowledge(tenant.id, query);
+  }
+  if (toolName === 'render_chart') {
+    // Cap the number of attachments per turn so a runaway loop can't blow the
+    // channel layer's payload size. Two is enough for any real answer.
+    if (attachments.length >= 2) {
+      return '[render_chart limit reached for this turn — at most 2 charts per reply]';
+    }
+    try {
+      const spec = args as unknown as ChartSpec;
+      const png = await renderChart(spec);
+      const safeName = String(spec.title ?? 'chart').replace(/[^\w.-]+/g, '_').slice(0, 40) || 'chart';
+      attachments.push({ name: `${safeName}.png`, png });
+      return `[chart rendered: "${spec.title}" — will be attached to the reply]`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'render failed';
+      return `[render_chart failed: ${msg}]`;
+    }
   }
   return `[unknown builtin tool: ${toolName}]`;
 }
@@ -253,6 +334,7 @@ export async function runTenantTurn(
     serverName === 'ingester' ? ingesterSession : session;
 
   const toolsUsed: string[] = [];
+  const attachments: TurnAttachment[] = [];
   try {
     const hasKnowledge = (await countEntries(tenant.id).catch(() => 0)) > 0;
     const systemPrompt = buildSystemPrompt(tenant, ctx, Boolean(ingesterSession), hasKnowledge);
@@ -279,6 +361,7 @@ export async function runTenantTurn(
       ...session.tools,
       ...(ingesterSession ? ingesterSession.tools : []),
       ...BUILTIN_TOOLS,
+      RENDER_CHART_TOOL,
       ...(hasKnowledge ? [SEARCH_KNOWLEDGE_TOOL] : []),
     ].filter((t) => isAllowed(t.serverName, t.toolName));
     const toolsParam: ChatCompletionTool[] | undefined = exposedTools.length > 0
@@ -357,7 +440,7 @@ export async function runTenantTurn(
               let body: string;
               if (def.serverName === 'builtin') {
                 body = await callWithTimeout(
-                  runBuiltinTool(def.toolName, args, tenant),
+                  runBuiltinTool(def.toolName, args, tenant, attachments),
                   TOOL_CALL_TIMEOUT_MS,
                   `builtin tool ${def.toolName} timed out`,
                 );
@@ -421,6 +504,7 @@ export async function runTenantTurn(
       tokensOut,
       toolsUsed,
       memoryNamespace: tenant.memory_namespace,
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
   } catch (err) {
     // Redacted logging (owner preference): log the error TYPE only, never the

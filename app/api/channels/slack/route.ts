@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { runTenantTurn } from '@/lib/agent-runtime';
+import { runTenantTurn, type TurnAttachment } from '@/lib/agent-runtime';
 import { getTenantBySlackChannel } from '@/lib/tenants';
 import { gateSlack } from '@/lib/mention';
 import { claimEvent } from '@/lib/dedupe';
+import { postSlackFile } from '@/lib/channels';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -100,10 +101,16 @@ async function handleSlackTurn(tenant: Tenant, event: SlackMessageEvent): Promis
       speaker: event.user,
       persist: true,
     });
-    await postSlackMessage(tenant, event.channel!, result.reply, event.thread_ts ?? event.ts);
+    await postSlackReply(
+      tenant,
+      event.channel!,
+      result.reply,
+      event.thread_ts ?? event.ts,
+      result.attachments,
+    );
   } catch (err) {
     console.error(`[slack/shared] turn failed for tenant ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`);
-    await postSlackMessage(
+    await postSlackReply(
       tenant,
       event.channel!,
       'Sorry — I hit an error. Please try again in a moment.',
@@ -127,12 +134,19 @@ function verifySlackSignature(
   return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
 }
 
-/** Reply via chat.postMessage with the tenant's workspace token (or global fallback). */
-async function postSlackMessage(
+/**
+ * Reply on Slack (workspace token, or global fallback). With one chart, send
+ * it via files.upload using `initial_comment` so Slack renders the text above
+ * the image as one card. Multiple charts → upload each then post the text.
+ * Note: files.upload doesn't accept thread_ts directly in the same way — for
+ * threaded replies with charts, we post the text in-thread after uploads.
+ */
+async function postSlackReply(
   tenant: Tenant,
   channel: string,
   text: string,
   threadTs?: string,
+  attachments?: TurnAttachment[],
 ): Promise<void> {
   const botToken = tenant.channels.slack?.bot_token ?? process.env.SLACK_BOT_TOKEN;
   if (!botToken) {
@@ -140,9 +154,23 @@ async function postSlackMessage(
     return;
   }
   if (process.env.SLACK_SEND_DISABLED === 'true') {
-    console.log(`[slack/shared] (send disabled) tenant ${tenant.slug} -> ${channel}: ${text.slice(0, 120)}`);
+    console.log(
+      `[slack/shared] (send disabled) tenant ${tenant.slug} -> ${channel}` +
+        (attachments?.length ? ` + ${attachments.length} chart(s)` : '') +
+        `: ${text.slice(0, 120)}`,
+    );
     return;
   }
+  const charts = attachments ?? [];
+  // One-chart, no-thread case → bundle into a single files.upload with initial_comment.
+  if (charts.length === 1 && !threadTs) {
+    await postSlackFile(botToken, channel, charts[0].png, charts[0].name, text);
+    return;
+  }
+  for (const a of charts) {
+    await postSlackFile(botToken, channel, a.png, a.name);
+  }
+  if (!text) return;
   const res = await fetch('https://slack.com/api/chat.postMessage', {
     method: 'POST',
     headers: {
