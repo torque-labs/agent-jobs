@@ -188,7 +188,7 @@ async function sendHeartbeat(botToken: string, chatId: number): Promise<void> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
-        text: '🔎 still working on this — heavier queries can take up to a minute…',
+        text: '🔎 still working on this — heavier queries can take a few minutes…',
       }),
     });
   } catch {

@@ -54,6 +54,11 @@ const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 // above the per-class MCP SDK request timeouts (lib/mcp.ts) so the inner one
 // fires first with a cleaner error; this is the last-resort outer guard.
 const TOOL_CALL_TIMEOUT_MS = 200_000;
+// Whole-turn budget. Each iteration's LLM call + tool calls are bounded
+// individually, but multi-iteration turns can still exceed any reasonable
+// wall-clock; this is the hard cap so the user gets a clean "try narrowing
+// it" message instead of waiting indefinitely.
+const TURN_BUDGET_MS = 5 * 60_000;
 
 /** A single prior message in the conversation, oldest first. */
 export type ConversationMessage = {
@@ -622,7 +627,16 @@ export async function runTenantTurn(
     let tokensOut = 0;
     let finalText: string | null = null;
 
+    const turnDeadline = turnT0 + TURN_BUDGET_MS;
+    let budgetExceeded = false;
     for (let iter = 0; iter < MAX_TOOL_LOOP_ITERATIONS; iter++) {
+      if (Date.now() > turnDeadline) {
+        budgetExceeded = true;
+        finalText =
+          'Sorry — that query is taking longer than I can spend on it. ' +
+          'Try narrowing it (smaller date range, fewer wallets, or a more specific metric) and I\'ll re-run.';
+        break;
+      }
       const completion: ChatCompletion = await callWithTimeout(
         client.chat.completions.create({
           model: tenant.model,
@@ -780,7 +794,8 @@ export async function runTenantTurn(
         user_message: userMessage.slice(0, 1000),
         started_at: turnStartedAt,
         completed_at: new Date(),
-        status: 'ok',
+        status: budgetExceeded ? 'timeout' : 'ok',
+        err_label: budgetExceeded ? 'TurnBudgetExceeded' : undefined,
         final_reply: finalText.trim().slice(0, 4000),
         tokens_in: tokensIn,
         tokens_out: tokensOut,
