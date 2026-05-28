@@ -45,6 +45,7 @@ import { renderChart, type ChartSpec } from './render-chart';
 import { renderHolderCard, type HolderCardSpec } from './render-card';
 import { renderCard } from './cards/render';
 import type { CardSpec } from './cards/types';
+import { saveTrace, type ToolCallTrace } from './turn-traces';
 import type { Tenant } from './types';
 
 const MAX_TOOL_LOOP_ITERATIONS = 25;
@@ -570,7 +571,9 @@ export async function runTenantTurn(
 
   const toolsUsed: string[] = [];
   const attachments: TurnAttachment[] = [];
+  const toolTraces: ToolCallTrace[] = [];
   const turnT0 = Date.now();
+  const turnStartedAt = new Date();
   console.log(
     `[turn] tenant=${tenant.slug} conv=${ctx.conversationId} model=${tenant.model} started`,
   );
@@ -695,17 +698,33 @@ export async function runTenantTurn(
                   `${def.serverName} tool ${def.toolName} timed out`,
                 );
               }
+              const dur = Date.now() - t0;
               // Structured tool-call trace — single line, greppable in Coolify
               // logs. Args summary is the first scalar value only, capped, so
               // we don't leak full SQL queries or wallet lists.
               console.log(
-                `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${Date.now() - t0}ms ok ${argSummary(args)}`,
+                `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${dur}ms ok ${argSummary(args)}`,
               );
+              toolTraces.push({
+                tool: def.toolName,
+                dur_ms: dur,
+                ok: true,
+                args_summary: argSummary(args) || undefined,
+              });
               return { id: tc.id, content: body };
             } catch (err) {
+              const dur = Date.now() - t0;
+              const errName = (err as Error).name;
               console.log(
-                `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${Date.now() - t0}ms FAIL ${(err as Error).name}`,
+                `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${dur}ms FAIL ${errName}`,
               );
+              toolTraces.push({
+                tool: def.toolName,
+                dur_ms: dur,
+                ok: false,
+                err_name: errName,
+                args_summary: argSummary(args) || undefined,
+              });
               return { id: tc.id, content: `[tool error: ${(err as Error).message}]` };
             }
           }),
@@ -751,6 +770,30 @@ export async function runTenantTurn(
       `[turn] tenant=${tenant.slug} completed dur=${Date.now() - turnT0}ms tokens=in:${tokensIn} out:${tokensOut} tools=${toolsUsed.length} attachments=${attachments.length}`,
     );
 
+    // Best-effort eval trace — never fail the turn on DB error.
+    try {
+      await saveTrace({
+        tenant_id: tenant.id,
+        conversation_id: ctx.conversationId,
+        model: tenant.model,
+        source: ctx.conversationId.split(':')[0] || undefined,
+        user_message: userMessage.slice(0, 1000),
+        started_at: turnStartedAt,
+        completed_at: new Date(),
+        status: 'ok',
+        final_reply: finalText.trim().slice(0, 4000),
+        tokens_in: tokensIn,
+        tokens_out: tokensOut,
+        tool_calls: toolTraces,
+        picked_render_tool: pickRenderTool(toolTraces),
+        attachments_count: attachments.length,
+      });
+    } catch (err) {
+      console.error(
+        `[agent-runtime] saveTrace failed for ${tenant.slug}: ${err instanceof Error ? err.name : 'error'}`,
+      );
+    }
+
     return {
       reply: finalText.trim(),
       tokensIn,
@@ -764,6 +807,29 @@ export async function runTenantTurn(
     console.log(
       `[turn] tenant=${tenant.slug} FAILED dur=${Date.now() - turnT0}ms tools=${toolsUsed.length} err=${label}`,
     );
+    // Persist the failed trace too — that's the most important eval signal.
+    try {
+      await saveTrace({
+        tenant_id: tenant.id,
+        conversation_id: ctx.conversationId,
+        model: tenant.model,
+        source: ctx.conversationId.split(':')[0] || undefined,
+        user_message: userMessage.slice(0, 1000),
+        started_at: turnStartedAt,
+        completed_at: new Date(),
+        status: label === 'TimeoutError' || /timed out/.test(label) ? 'timeout' : 'failed',
+        err_label: label,
+        tokens_in: 0,
+        tokens_out: 0,
+        tool_calls: toolTraces,
+        picked_render_tool: pickRenderTool(toolTraces),
+        attachments_count: attachments.length,
+      });
+    } catch (saveErr) {
+      console.error(
+        `[agent-runtime] saveTrace (failed turn) failed for ${tenant.slug}: ${saveErr instanceof Error ? saveErr.name : 'error'}`,
+      );
+    }
     // Redacted logging (owner preference): log the error TYPE only, never the
     // verbatim provider error body or model output, which can carry secrets or
     // PII. The bounded label is enough to triage; full bodies are not persisted.
@@ -800,6 +866,20 @@ function argSummary(args: Record<string, unknown>): string {
   }
   const line = parts.join(' ');
   return line.length > 80 ? line.slice(0, 77) + '…' : line;
+}
+
+const RENDER_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'render_card',
+  'render_chart',
+  'render_holder_card',
+]);
+
+/** First successful render-tool call wins. null if none fired (or all failed). */
+function pickRenderTool(traces: ToolCallTrace[]): string | null {
+  for (const t of traces) {
+    if (t.ok && RENDER_TOOL_NAMES.has(t.tool)) return t.tool;
+  }
+  return null;
 }
 
 function callWithTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
