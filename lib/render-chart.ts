@@ -57,10 +57,34 @@ async function buildRenderer(): Promise<(spec: ChartSpec) => Promise<Buffer>> {
     },
   });
 
-  // System sans-serif is fine for Alpine; @napi-rs/canvas ships with a default.
-  // If we ever ship a brand font (e.g. Instrument Sans), drop the .ttf into the
-  // image and register it here.
-  void GlobalFonts;
+  // Register fonts so ctx.fillText actually draws text. Alpine has no fonts by
+  // default, so without this all titles/ticks/legends silently no-op. We try
+  // multiple paths because system font layout differs by base image:
+  //   - Alpine font-noto:        /usr/share/fonts/noto/NotoSans-Regular.ttf
+  //   - Debian/Ubuntu fonts-noto: /usr/share/fonts/truetype/noto/NotoSans-Regular.ttf
+  //   - macOS dev:               /System/Library/Fonts/Helvetica.ttc
+  // First two cover production; macOS one keeps local dev working.
+  const fontCandidates: Array<[string, string]> = [
+    ['/usr/share/fonts/noto/NotoSans-Regular.ttf', 'Noto Sans'],
+    ['/usr/share/fonts/noto/NotoSans-Bold.ttf', 'Noto Sans'],
+    ['/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf', 'Noto Sans'],
+    ['/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf', 'Noto Sans'],
+    ['/System/Library/Fonts/Helvetica.ttc', 'Helvetica'],
+    ['/System/Library/Fonts/Supplemental/Arial.ttf', 'Arial'],
+  ];
+  const registered: string[] = [];
+  for (const [path, family] of fontCandidates) {
+    try {
+      if (GlobalFonts.registerFromPath(path, family)) registered.push(family);
+    } catch {
+      // path not present on this OS — try the next one
+    }
+  }
+  // Pick the first family that registered; default to sans-serif as a Skia
+  // fallback (works if @napi-rs/canvas finds a system font on its own).
+  const chartFontFamily = registered[0] ?? 'sans-serif';
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  (Chart.defaults.font as any).family = chartFontFamily;
 
   return async (spec: ChartSpec): Promise<Buffer> => {
     if (spec.series.length === 0) throw new Error('renderChart: at least one series required');
