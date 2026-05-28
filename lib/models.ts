@@ -30,6 +30,8 @@ export const MODELS: ModelCatalogEntry[] = [
   { id: 'x-ai/grok-4.20', name: 'Grok 4.20', provider: 'openrouter' },
   { id: 'x-ai/grok-4.20-multi-agent', name: 'Grok 4.20 Multi-Agent', provider: 'openrouter' },
 
+  { id: 'deepseek/deepseek-v4-pro', name: 'DeepSeek V4 Pro (1M ctx, cheap)', provider: 'openrouter' },
+  { id: 'deepseek/deepseek-v4-flash', name: 'DeepSeek V4 Flash (1M ctx, cheapest)', provider: 'openrouter' },
   { id: 'deepseek/deepseek-chat', name: 'DeepSeek V3 Chat', provider: 'openrouter' },
   { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1 (reasoning)', provider: 'openrouter' },
   { id: 'deepseek/deepseek-r1-distill-llama-70b', name: 'DeepSeek R1 Distill Llama 70B', provider: 'openrouter' },
@@ -92,6 +94,8 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   'google/gemini-2.0-flash-001': { in: 0.1, out: 0.4 },
   'deepseek/deepseek-chat': { in: 0.27, out: 1.1 },
   'deepseek/deepseek-r1': { in: 0.55, out: 2.19 },
+  'deepseek/deepseek-v4-pro': { in: 0.435, out: 0.87 },
+  'deepseek/deepseek-v4-flash': { in: 0.1, out: 0.2 },
 };
 
 /** Estimated USD cost for a turn given token counts. */
