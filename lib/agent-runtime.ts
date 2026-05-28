@@ -570,6 +570,10 @@ export async function runTenantTurn(
 
   const toolsUsed: string[] = [];
   const attachments: TurnAttachment[] = [];
+  const turnT0 = Date.now();
+  console.log(
+    `[turn] tenant=${tenant.slug} conv=${ctx.conversationId} model=${tenant.model} started`,
+  );
   try {
     const hasKnowledge = (await countEntries(tenant.id).catch(() => 0)) > 0;
     const systemPrompt = buildSystemPrompt(tenant, ctx, Boolean(ingesterSession), hasKnowledge);
@@ -671,6 +675,7 @@ export async function runTenantTurn(
               return { id: tc.id, content: `[invalid JSON arguments: ${(err as Error).message}]` };
             }
             toolsUsed.push(def.toolName);
+            const t0 = Date.now();
             try {
               let body: string;
               if (def.serverName === 'builtin') {
@@ -690,8 +695,17 @@ export async function runTenantTurn(
                   `${def.serverName} tool ${def.toolName} timed out`,
                 );
               }
+              // Structured tool-call trace — single line, greppable in Coolify
+              // logs. Args summary is the first scalar value only, capped, so
+              // we don't leak full SQL queries or wallet lists.
+              console.log(
+                `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${Date.now() - t0}ms ok ${argSummary(args)}`,
+              );
               return { id: tc.id, content: body };
             } catch (err) {
+              console.log(
+                `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${Date.now() - t0}ms FAIL ${(err as Error).name}`,
+              );
               return { id: tc.id, content: `[tool error: ${(err as Error).message}]` };
             }
           }),
@@ -733,6 +747,10 @@ export async function runTenantTurn(
       }
     }
 
+    console.log(
+      `[turn] tenant=${tenant.slug} completed dur=${Date.now() - turnT0}ms tokens=in:${tokensIn} out:${tokensOut} tools=${toolsUsed.length} attachments=${attachments.length}`,
+    );
+
     return {
       reply: finalText.trim(),
       tokensIn,
@@ -742,10 +760,13 @@ export async function runTenantTurn(
       ...(attachments.length > 0 ? { attachments } : {}),
     };
   } catch (err) {
+    const label = err instanceof Error ? err.name : 'UnknownError';
+    console.log(
+      `[turn] tenant=${tenant.slug} FAILED dur=${Date.now() - turnT0}ms tools=${toolsUsed.length} err=${label}`,
+    );
     // Redacted logging (owner preference): log the error TYPE only, never the
     // verbatim provider error body or model output, which can carry secrets or
     // PII. The bounded label is enough to triage; full bodies are not persisted.
-    const label = err instanceof Error ? err.name : 'UnknownError';
     console.error(`[agent-runtime] turn failed for tenant ${tenant.slug}: ${label}`);
     return {
       reply: 'Sorry — I hit an error answering that. Please try again in a moment.',
@@ -758,6 +779,27 @@ export async function runTenantTurn(
     await session.close();
     if (ingesterSession) await ingesterSession.close();
   }
+}
+
+/**
+ * One-line argument summary for tool-call logs. Pulls the first 2 scalar
+ * fields the LLM passed (string/number/boolean) and caps the whole line at
+ * 80 chars. Used by tool-call traces in the runtime — full args may carry
+ * SQL queries, wallet lists, or PII, which we never want in logs.
+ */
+function argSummary(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(args)) {
+    if (parts.length >= 2) break;
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      const s = String(v);
+      parts.push(`${k}=${s.length > 30 ? s.slice(0, 27) + '…' : s}`);
+    } else if (Array.isArray(v)) {
+      parts.push(`${k}=array[${v.length}]`);
+    }
+  }
+  const line = parts.join(' ');
+  return line.length > 80 ? line.slice(0, 77) + '…' : line;
 }
 
 function callWithTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {

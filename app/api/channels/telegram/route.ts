@@ -145,15 +145,41 @@ async function sendTelegramReply(
   }
 }
 
-/** Show "typing…" while the turn runs: ping sendChatAction now + every ~4s. */
+/**
+ * Show "typing…" while the turn runs: ping sendChatAction now + every ~4s.
+ * Also fires a one-shot "still working" heartbeat message at HEARTBEAT_MS so
+ * the user knows the bot didn't drop the request when a slow tool call (ingester
+ * SQL, ask_torque) is in flight. Typing dot alone is easy to miss on mobile.
+ */
+const TYPING_HEARTBEAT_MS = 18_000;
+
 async function withTyping<T>(botToken: string, chatId: number, fn: () => Promise<T>): Promise<T> {
   if (process.env.TELEGRAM_SEND_DISABLED === 'true') return fn();
   void sendChatAction(botToken, chatId);
   const iv = setInterval(() => void sendChatAction(botToken, chatId), 4000);
+  const heartbeat = setTimeout(() => {
+    void sendHeartbeat(botToken, chatId);
+  }, TYPING_HEARTBEAT_MS);
   try {
     return await fn();
   } finally {
     clearInterval(iv);
+    clearTimeout(heartbeat);
+  }
+}
+
+async function sendHeartbeat(botToken: string, chatId: number): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: '🔎 still working on this — heavier queries can take up to a minute…',
+      }),
+    });
+  } catch {
+    // best-effort — never let a heartbeat ping fail the turn
   }
 }
 
