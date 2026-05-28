@@ -43,6 +43,8 @@ import { countEntries, searchKnowledge } from './tenant-knowledge';
 import { loadHistory, saveMessages } from './conversation';
 import { renderChart, type ChartSpec } from './render-chart';
 import { renderHolderCard, type HolderCardSpec } from './render-card';
+import { renderCard } from './cards/render';
+import type { CardSpec } from './cards/types';
 import type { Tenant } from './types';
 
 const MAX_TOOL_LOOP_ITERATIONS = 25;
@@ -100,8 +102,7 @@ export type TenantTurnResult = {
 const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'get_leaderboard',
   'search_knowledge',
-  'render_holder_card',
-  'render_chart',
+  'render_card',
 ]);
 function isBuiltinTool(toolName: string): boolean {
   return BUILTIN_TOOL_NAMES.has(toolName);
@@ -136,11 +137,94 @@ const BUILTIN_TOOLS: McpToolDef[] = [
 // the PNG into the per-turn attachments collector. The tool returns a
 // human-readable confirmation, NOT the PNG bytes (those would blow the
 // context); the channel layer reads attachments from TenantTurnResult.
-// Render a fully-branded "terminal" data card (leaderboard + insights). This
-// is the primary visual tool — produces a richer image than a plain chart by
-// also including framing context (header, intro, concentration insights,
-// footer timestamp, optional CTA). Use it whenever the answer is "top N
-// holders" or similar leaderboard-shaped data.
+// PRIMARY visual tool — composable Torque-branded data card. The agent
+// designs the card per-question by passing an ordered array of typed
+// `sections` (intro_body, data_rows, big_number, kv_strip, comparison,
+// sparkline, histogram, callout, badge_row, mini_table, cta_row, …). The
+// renderer wraps it with status_bar (top, with Torque logo) + footer (bottom)
+// and emits a single PNG attached to the reply.
+const RENDER_CARD_TOOL: McpToolDef = {
+  serverName: 'builtin',
+  toolName: 'render_card',
+  exposedName: 'render_card',
+  description:
+    'PRIMARY visualization tool. Compose a Torque-branded terminal card by ' +
+    'picking section primitives. Use whenever the answer involves NUMBERS — ' +
+    'rankings, trends, hero metrics, comparisons, distributions, status. The ' +
+    'reply attaches the PNG. There is NO other render/chart tool — this is ' +
+    'the only visual surface.\n' +
+    '\n' +
+    'WHEN TO RENDER:\n' +
+    ' • ANY numeric answer (top N, trends, single metrics, comparisons, ' +
+    'distributions, status questions like "current epoch?", "claim rate?") — ' +
+    'render the card. Don\'t reply with a one-line number as text when a ' +
+    '`big_number` card would make it land.\n' +
+    ' • Conversational greetings, refusals, single-sentence yes/no answers — ' +
+    'skip the card, reply with text.\n' +
+    '\n' +
+    'PICK SECTIONS BY QUESTION SHAPE:\n' +
+    ' • Top-N / leaderboard → `data_rows` with `rank`+`pct` + `kv_strip` insights.\n' +
+    ' • Trend over time → `sparkline` + `kv_strip` (current/delta/observation).\n' +
+    ' • Single hero number ("current epoch", "claim rate", "total participants") ' +
+    '→ `big_number` (+ optional `callout`/`kv_strip` for context).\n' +
+    ' • Two things compared → `comparison`.\n' +
+    ' • Distribution / breakdown by bucket / by category → `histogram` + ' +
+    '`kv_strip` takeaway. (NOT a separate chart tool — use render_card with a ' +
+    '`histogram` section.)\n' +
+    ' • Mixed: combine. Max 8 sections per card.\n' +
+    '\n' +
+    'VOICE RULES (STRICT):\n' +
+    ' • NEVER name statistical metrics like HHI, Gini, p-value, z-score, R². ' +
+    'Translate to plain English (e.g. "concentration: high — top wallet dominates").\n' +
+    ' • Lowercase titles + labels (terminal aesthetic).\n' +
+    ' • `kv_strip` values are sentence-fragments under 60 chars.\n' +
+    ' • `intro_body.text` ≤ 280 chars.\n' +
+    ' • Don\'t pass two big_numbers (use comparison). Don\'t pass two sparklines. ' +
+    'cta_row must be the last section.\n' +
+    '\n' +
+    'Example — leaderboard:\n' +
+    '{ symbol:"$trump", label:"leaderboard", updatedUtc:"14:32:08 utc", sections:[\n' +
+    '  {type:"intro_body", title:"how this leaderboard works", text:"Time-weighted holdings rank by amount × duration."},\n' +
+    '  {type:"data_rows", title:"top holders — current epoch", rows:[\n' +
+    '    {rank:1, name:"patriot_01", pct:100, value:"2.84", unit:"M", highlight:true},\n' +
+    '    {rank:2, name:"eagle_dao", pct:55, value:"1.56", unit:"M"}]},\n' +
+    '  {type:"kv_strip", title:"intelligence — concentration", rows:[\n' +
+    '    {key:"top 1 share", val:"37.5% → single wallet dominates"},\n' +
+    '    {key:"concentration", val:"high — top wallet dominates", accent:"alert"}]}]}\n' +
+    '\n' +
+    'Example — trend: { symbol:"$trump", label:"trend · 30d", sections:[\n' +
+    '  {type:"sparkline", title:"holders — 30d", series:[12400,12510,…,14980], start:"apr 28", end:"may 28", endValue:"14,980", delta:{value:"+18%", direction:"up"}},\n' +
+    '  {type:"kv_strip", rows:[{key:"30d change", val:"+2,580 holders", accent:"ok"}]}]}\n' +
+    '\n' +
+    'Example — hero number: { symbol:"$trump", label:"epoch status", sections:[\n' +
+    '  {type:"big_number", title:"current epoch", value:"14", label:"of 16", context:"2 epochs remaining"}]}',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      symbol: { type: 'string', description: 'Lowercase token, e.g. "$trump".' },
+      label: { type: 'string', description: 'Lowercase card label, e.g. "leaderboard", "trend".' },
+      logo: { type: 'boolean', description: 'Default true; pass false to hide the Torque hex glyph.' },
+      updatedUtc: { type: 'string', description: 'Pre-formatted timestamp, e.g. "14:32:08 utc".' },
+      footerText: { type: 'string', description: 'Override the footer left text (default "data current").' },
+      sections: {
+        type: 'array',
+        description: 'Ordered body sections (max 8). Each item is a typed primitive — see schema variants.',
+        items: {
+          type: 'object',
+          properties: {
+            type: { type: 'string' },
+          },
+          required: ['type'],
+        },
+      },
+    },
+    required: ['symbol', 'label', 'sections'],
+  },
+};
+
+// Back-compat: the leaderboard-specific tool. Still callable but new code
+// should use `render_card`. Kept for one release; remove once telemetry shows
+// no callers.
 const RENDER_HOLDER_CARD_TOOL: McpToolDef = {
   serverName: 'builtin',
   toolName: 'render_holder_card',
@@ -327,6 +411,24 @@ async function runBuiltinTool(
     if (!query) return '[search_knowledge requires a query]';
     return searchKnowledge(tenant.id, query);
   }
+  if (toolName === 'render_card') {
+    if (attachments.length >= 2) {
+      return '[render_card limit reached for this turn — at most 2 attachments per reply]';
+    }
+    try {
+      const spec = args as unknown as CardSpec;
+      const { png, warnings } = await renderCard(spec);
+      const safeName = `${spec.symbol ?? 'card'}_${spec.label ?? 'card'}`
+        .replace(/[^\w.-]+/g, '_')
+        .slice(0, 40);
+      attachments.push({ name: `${safeName}.png`, png });
+      const warnTail = warnings.length > 0 ? ` warnings: ${warnings.slice(0, 3).join('; ')}` : '';
+      return `[card rendered (${spec.symbol} / ${spec.label}) — will be attached to the reply.${warnTail}]`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'render failed';
+      return `[render_card failed: ${msg}]`;
+    }
+  }
   if (toolName === 'render_holder_card') {
     if (attachments.length >= 2) {
       return '[render_holder_card limit reached for this turn — at most 2 attachments per reply]';
@@ -494,8 +596,7 @@ export async function runTenantTurn(
       ...session.tools,
       ...(ingesterSession ? ingesterSession.tools : []),
       ...BUILTIN_TOOLS,
-      RENDER_HOLDER_CARD_TOOL,
-      RENDER_CHART_TOOL,
+      RENDER_CARD_TOOL,
       ...(hasKnowledge ? [SEARCH_KNOWLEDGE_TOOL] : []),
     ].filter((t) => isAllowed(t.serverName, t.toolName));
     const toolsParam: ChatCompletionTool[] | undefined = exposedTools.length > 0
