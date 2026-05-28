@@ -40,6 +40,8 @@ import {
   estimateBadgeRowHeight,
   renderCallout,
   estimateCalloutHeight,
+  renderMiniTable,
+  estimateMiniTableHeight,
   renderCtaRow,
   estimateCtaRowHeight,
   renderInternalNote,
@@ -69,6 +71,8 @@ function dispatchSection(s: Section): ReactElement {
       return renderBadgeRow(s);
     case 'callout':
       return renderCallout(s);
+    case 'mini_table':
+      return renderMiniTable(s);
     case 'cta_row':
       return renderCtaRow(s);
     case '_internal_note':
@@ -96,6 +100,8 @@ function estimateSectionHeight(s: Section): number {
       return estimateBadgeRowHeight(s);
     case 'callout':
       return estimateCalloutHeight(s);
+    case 'mini_table':
+      return estimateMiniTableHeight(s);
     case 'cta_row':
       return estimateCtaRowHeight(s);
     case '_internal_note':

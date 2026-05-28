@@ -24,6 +24,7 @@ import type {
   Histogram,
   BadgeRow,
   Callout,
+  MiniTable,
   CtaRow,
 } from './types';
 
@@ -744,7 +745,81 @@ export function estimateCalloutHeight(_p: Callout): number {
   return 64;
 }
 
-// --- mini_table (REMOVED) — data_rows covers the same shapes. ----------
+// --- mini_table ---------------------------------------------------------
+//
+// Multi-column data grid (2-4 columns). Use when the answer is genuinely
+// tabular and data_rows (single bar + value column) doesn't fit. Example:
+// referral table with Referrer / Referee / Balance / Score.
+
+export function renderMiniTable(p: MiniTable): ReactElement {
+  const cols = (p.columns ?? []).slice(0, 4);
+  const maxRows = Math.min(p.maxRows ?? 8, 12);
+  const rows = (p.rows ?? []).slice(0, maxRows);
+  const totalW = CARD_WIDTH - PAD_X * 2;
+  const colW = cols.length > 0 ? totalW / cols.length : totalW;
+  const cellMax = 24;
+  return (
+    <Col>
+      {p.title ? renderSectionRuleInternal(p.title) : null}
+      <Col style={{ padding: '4px 22px 14px' }}>
+        {/* Header row */}
+        <Row
+          style={{
+            padding: '4px 0 10px',
+            borderBottom: `1px dashed ${P.border}`,
+            marginBottom: 6,
+          }}
+        >
+          {cols.map((c) => (
+            <Row
+              key={`h-${c.key}`}
+              style={{
+                width: colW,
+                justifyContent: c.align === 'right' ? 'flex-end' : 'flex-start',
+                color: P.textTertiary,
+                fontSize: 10,
+                textTransform: 'uppercase',
+                letterSpacing: 0.8,
+              }}
+            >
+              {c.label}
+            </Row>
+          ))}
+        </Row>
+        {/* Data rows */}
+        {rows.map((r, idx) => (
+          <Row
+            key={`r-${idx}`}
+            style={{
+              padding: '6px 0',
+              fontSize: 12,
+              // Subtle zebra striping for legibility on dense tables.
+              backgroundColor: idx % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent',
+            }}
+          >
+            {cols.map((c) => (
+              <Row
+                key={`${idx}-${c.key}`}
+                style={{
+                  width: colW,
+                  justifyContent: c.align === 'right' ? 'flex-end' : 'flex-start',
+                  color: P.textPrimary,
+                }}
+              >
+                {truncate(String(r[c.key] ?? '—'), cellMax)}
+              </Row>
+            ))}
+          </Row>
+        ))}
+      </Col>
+    </Col>
+  );
+}
+
+export function estimateMiniTableHeight(p: MiniTable): number {
+  const n = Math.min((p.rows ?? []).length, Math.min(p.maxRows ?? 8, 12));
+  return (p.title ? SECTION_RULE_HEIGHT : 0) + 28 + n * 30 + 18;
+}
 
 // --- cta_row ------------------------------------------------------------
 

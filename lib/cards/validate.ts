@@ -199,6 +199,32 @@ function validateSection(s: Section, warnings: string[]): Section | null {
       }
       return s;
     }
+    case 'mini_table': {
+      if (!Array.isArray(s.columns) || s.columns.length === 0) {
+        warnings.push('mini_table dropped — columns required.');
+        return null;
+      }
+      if (!Array.isArray(s.rows) || s.rows.length === 0) {
+        warnings.push('mini_table dropped — rows required.');
+        return null;
+      }
+      const cols = s.columns
+        .filter((c) => c && typeof c.key === 'string' && typeof c.label === 'string')
+        .slice(0, CARD_LIMITS.MINI_TABLE_COLS_MAX);
+      if (cols.length === 0) {
+        warnings.push('mini_table dropped — no valid columns.');
+        return null;
+      }
+      const rows = s.rows.filter(
+        (r) => r && typeof r === 'object' && cols.some((c) => typeof r[c.key] === 'string'),
+      );
+      if (rows.length === 0) {
+        warnings.push('mini_table dropped — no rows had any column key as a string.');
+        return null;
+      }
+      const cap = Math.min(s.maxRows ?? 8, CARD_LIMITS.MINI_TABLE_ROWS_HARD_MAX);
+      return { ...s, columns: cols, rows: rows.slice(0, cap) };
+    }
     case 'cta_row': {
       if (!Array.isArray(s.buttons) || s.buttons.length === 0) {
         warnings.push('cta_row dropped — buttons required.');

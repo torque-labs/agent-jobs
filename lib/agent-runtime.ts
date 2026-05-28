@@ -155,10 +155,11 @@ const RENDER_CARD_TOOL: McpToolDef = {
   exposedName: 'render_card',
   description:
     'PRIMARY visualization tool. Compose a Torque-branded terminal card by ' +
-    'picking section primitives. Use whenever the answer involves NUMBERS — ' +
-    'rankings, trends, hero metrics, comparisons, distributions, status. The ' +
-    'reply attaches the PNG. There is NO other render/chart tool — this is ' +
-    'the only visual surface.\n' +
+    'picking section primitives (intro_body, data_rows, big_number, kv_strip, ' +
+    'comparison, sparkline, histogram, mini_table, badge_row, callout, cta_row). ' +
+    'Use whenever the answer involves NUMBERS — rankings, trends, hero metrics, ' +
+    'comparisons, distributions, multi-column tables, status. The reply attaches ' +
+    'the PNG. There is NO other render/chart tool — this is the only visual surface.\n' +
     '\n' +
     'WHEN TO RENDER:\n' +
     ' • ANY numeric answer (top N, trends, single metrics, comparisons, ' +
@@ -177,6 +178,11 @@ const RENDER_CARD_TOOL: McpToolDef = {
     ' • Distribution / breakdown by bucket / by category → `histogram` + ' +
     '`kv_strip` takeaway. (NOT a separate chart tool — use render_card with a ' +
     '`histogram` section.)\n' +
+    ' • Multi-column tabular data (referrers/referees + multiple value columns, ' +
+    'wallet + balance + score + days, schedule tables) → `mini_table` with 2-4 ' +
+    'columns. NEVER write a Markdown table (`| col | col |`) in the reply — ' +
+    'Telegram flattens it. mini_table is your ONLY way to display multi-column ' +
+    'rows; use it whenever you would have written a Markdown table.\n' +
     ' • Mixed: combine. Max 8 sections per card.\n' +
     '\n' +
     'VOICE RULES (STRICT):\n' +

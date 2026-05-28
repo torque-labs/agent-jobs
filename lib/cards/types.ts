@@ -43,6 +43,7 @@ export type Section =
   | Histogram
   | BadgeRow
   | Callout
+  | MiniTable
   | CtaRow
   // _InternalNote is used by render.tsx for the height-cap truncation marker
   // only. It is never exposed in the agent's tool schema or documented.
@@ -143,6 +144,26 @@ export type Callout = {
   icon?: 'info' | 'warn' | 'check' | 'alert';
 };
 
+export type MiniTableColumn = {
+  /** Object key the column reads from each row. */
+  key: string;
+  /** Human-readable header text (uppercased + muted by the renderer). */
+  label: string;
+  /** Column alignment; defaults to "left". */
+  align?: 'left' | 'right';
+};
+
+export type MiniTable = {
+  type: 'mini_table';
+  title?: string;
+  /** 2-4 columns. Excess sliced. */
+  columns: MiniTableColumn[];
+  /** Each row is a flat string map keyed by column.key. */
+  rows: Array<Record<string, string>>;
+  /** Default 8, hard cap 12. */
+  maxRows?: number;
+};
+
 export type CtaButton = {
   text: string;
   style?: 'primary' | 'secondary';
@@ -187,5 +208,8 @@ export const CARD_LIMITS = {
   SPARKLINE_MIN: 2,
   SPARKLINE_MAX: 60,
   HISTOGRAM_BINS_MAX: 16,
+  MINI_TABLE_COLS_MAX: 4,
+  MINI_TABLE_ROWS_HARD_MAX: 12,
+  MINI_TABLE_CELL_MAX: 24,
   CTA_MAX: 2,
 } as const;
