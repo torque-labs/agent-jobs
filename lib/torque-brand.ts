@@ -26,3 +26,31 @@ export const TORQUE_BRAND = {
 } as const;
 
 export type TorqueBrand = typeof TORQUE_BRAND;
+
+/**
+ * Terminal-aesthetic palette for branded data cards (lib/render-card.tsx).
+ * Separate token bundle so the card renderer can have its own visual
+ * vocabulary (warmer accents, multiple colored highlights) without forcing
+ * those choices onto the more neutral Chart.js chart renderer.
+ */
+export const TORQUE_TERMINAL = {
+  // Backgrounds
+  pageBg: '#EDF1FA',
+  terminalBg: '#0E1118',
+  terminalBgSoft: '#141821',
+  border: 'rgba(255,255,255,0.08)',
+  // Text levels
+  textPrimary: '#FFFFFF',
+  textSecondary: 'rgba(255,255,255,0.55)',
+  textTertiary: 'rgba(255,255,255,0.32)',
+  // Accents — used sparingly for highlights, dividers, callouts.
+  accentBlue: '#7BC7FC',
+  accentBlueDim: 'rgba(123,199,252,0.18)',
+  accentOrange: '#E8A94A',
+  accentYellow: '#E5C97A',
+  accentYellowDim: 'rgba(229,201,122,0.18)',
+  accentRed: '#E37B6B',
+  accentGreen: '#5DD89B',
+} as const;
+
+export type TorqueTerminal = typeof TORQUE_TERMINAL;

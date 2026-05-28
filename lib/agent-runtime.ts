@@ -42,7 +42,7 @@ import { recordUsage } from './tenant-usage';
 import { countEntries, searchKnowledge } from './tenant-knowledge';
 import { loadHistory, saveMessages } from './conversation';
 import { renderChart, type ChartSpec } from './render-chart';
-import { leaderboardSpec, timeseriesSpec } from './chart-presets';
+import { renderHolderCard, type HolderCardSpec } from './render-card';
 import type { Tenant } from './types';
 
 const MAX_TOOL_LOOP_ITERATIONS = 25;
@@ -100,9 +100,8 @@ export type TenantTurnResult = {
 const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'get_leaderboard',
   'search_knowledge',
+  'render_holder_card',
   'render_chart',
-  'render_leaderboard_chart',
-  'render_timeseries_chart',
 ]);
 function isBuiltinTool(toolName: string): boolean {
   return BUILTIN_TOOL_NAMES.has(toolName);
@@ -137,9 +136,102 @@ const BUILTIN_TOOLS: McpToolDef[] = [
 // the PNG into the per-turn attachments collector. The tool returns a
 // human-readable confirmation, NOT the PNG bytes (those would blow the
 // context); the channel layer reads attachments from TenantTurnResult.
-// PREFER the narrower presets (render_leaderboard_chart, render_timeseries_chart)
-// when they fit — they encode chart-design defaults the model can't forget. Use
-// render_chart only for shapes the presets don't cover.
+// Render a fully-branded "terminal" data card (leaderboard + insights). This
+// is the primary visual tool — produces a richer image than a plain chart by
+// also including framing context (header, intro, concentration insights,
+// footer timestamp, optional CTA). Use it whenever the answer is "top N
+// holders" or similar leaderboard-shaped data.
+const RENDER_HOLDER_CARD_TOOL: McpToolDef = {
+  serverName: 'builtin',
+  toolName: 'render_holder_card',
+  exposedName: 'render_holder_card',
+  description:
+    "Render the Torque-branded 'top holders' data card (PNG) that the channel " +
+    'sends as an image. Use this for any leaderboard / top-N wallets / top-N ' +
+    'holders question — it includes the chart, the wallet rows, intro context, ' +
+    'and a few summary insight rows in one branded image.\n' +
+    'Rules:\n' +
+    "- `rows` is required, max 10, sorted by descending value. Pass `pct` as 0-100 " +
+    'where 100 = the longest bar (typically the rank-1 wallet at 100%, others ' +
+    'scaled proportionally).\n' +
+    '- Mark the top wallet `highlight: true` for the yellow accent treatment.\n' +
+    '- `insights` should be 2-5 plain-English summary rows. NEVER name statistical ' +
+    'metrics (no "gini", "HHI", "p-value"); compute them yourself if useful, ' +
+    'translate to plain English (e.g. "concentration: high — top wallet dominates").\n' +
+    '- Set one insight `accent: true` for the headline (red callout).\n' +
+    '- `symbol` and `label` go in the live status bar; lowercase, e.g. "$trump" / "leaderboard".\n' +
+    '- `dataTitle` follows pattern "top holders — <epoch label>".\n' +
+    '- `updatedUtc` is pre-formatted "HH:MM:SS utc".\n' +
+    'After the card renders, your text reply should call out the headline number ' +
+    "or trend the card shows — don't just send the picture silently.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      symbol: { type: 'string', description: 'Project token, lowercase. e.g. "$trump"' },
+      label: { type: 'string', description: 'Section name, lowercase. e.g. "leaderboard"' },
+      introTitle: {
+        type: 'string',
+        description: 'Optional intro section title, e.g. "how this leaderboard works".',
+      },
+      intro: {
+        type: 'string',
+        description: 'Optional 1-2 sentence intro / mechanic explanation above the data block.',
+      },
+      introMuted: {
+        type: 'string',
+        description: 'Optional muted suffix after intro, e.g. "Window closes in 34d 09h 18m."',
+      },
+      dataTitle: {
+        type: 'string',
+        description: 'Section title above the rows, e.g. "top holders — current epoch".',
+      },
+      rows: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            rank: { type: 'number' },
+            name: { type: 'string', description: 'Wallet display name (already truncated by you).' },
+            pct: { type: 'number', description: '0-100; the longest bar (typically rank 1) is 100.' },
+            value: { type: 'string', description: 'Numeric portion, e.g. "2.84".' },
+            unit: { type: 'string', description: 'Optional unit, e.g. "M", "K".' },
+            highlight: { type: 'boolean', description: 'True on the rank-1 row for yellow accent.' },
+          },
+          required: ['rank', 'name', 'pct', 'value'],
+        },
+        description: 'Max 10 rows; sorted by descending value.',
+      },
+      insightTitle: {
+        type: 'string',
+        description: 'Section title above the insights block, e.g. "intelligence — concentration".',
+      },
+      insights: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            key: { type: 'string', description: 'Plain-English label, lowercase preferred.' },
+            val: { type: 'string', description: 'Plain-English value (may include arrow + commentary).' },
+            accent: { type: 'boolean', description: 'True on the headline insight (red callout).' },
+          },
+          required: ['key', 'val'],
+        },
+        description: '2-5 plain-English summary rows. Never name statistical metrics.',
+      },
+      updatedUtc: { type: 'string', description: 'Pre-formatted timestamp e.g. "14:32:08 utc".' },
+      ctaText: {
+        type: 'string',
+        description: 'Optional CTA label for the bottom button, e.g. "view full leaderboard".',
+      },
+    },
+    required: ['symbol', 'label', 'dataTitle', 'rows'],
+  },
+};
+
+// Generic Chart.js fallback. Use only when render_holder_card doesn't fit
+// (e.g. time-series, multi-series comparisons, distributions). The card tools
+// produce the polished branded image; this is the functional fallback for the
+// long tail.
 const RENDER_CHART_TOOL: McpToolDef = {
   serverName: 'builtin',
   toolName: 'render_chart',
@@ -196,84 +288,6 @@ const RENDER_CHART_TOOL: McpToolDef = {
   },
 };
 
-// Preset 1: top-N leaderboard. The model passes raw wallet addresses and value
-// numbers; the preset truncates addresses, caps at 10, and fills in the rest.
-const RENDER_LEADERBOARD_CHART_TOOL: McpToolDef = {
-  serverName: 'builtin',
-  toolName: 'render_leaderboard_chart',
-  exposedName: 'render_leaderboard_chart',
-  description:
-    'Render a Torque-branded leaderboard bar chart (top wallets / top holders / ' +
-    'top earners). PREFER this over render_chart when the answer is "top N ' +
-    'wallets by X" — it formats wallet addresses, caps to 10 rows, and sets ' +
-    'the unit for you. Pass FULL wallet addresses; the preset shortens them.\n' +
-    'Good example: rows=[{wallet:"7xKabcdef…ABCD",value:1240000}, …], ' +
-    'title:"$TRUMP top holders — May 28", valueLabel:"Holding", unit:"$TRUMP".',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      title: {
-        type: 'string',
-        description: 'Specific title incl. project + metric + date. Required.',
-      },
-      valueLabel: { type: 'string', description: 'What the bar lengths mean (e.g. "Holding", "Score").' },
-      unit: { type: 'string', description: 'Y-axis unit ("$TRUMP","USD","wallets","%").' },
-      rows: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            wallet: { type: 'string', description: 'Full wallet address; preset shortens it.' },
-            value: { type: 'number' },
-          },
-          required: ['wallet', 'value'],
-        },
-        description: 'Rows (≤10); preset takes the first 10 in array order.',
-      },
-    },
-    required: ['title', 'valueLabel', 'unit', 'rows'],
-  },
-};
-
-// Preset 2: daily/weekly metric over time. Pass ISO dates; preset formats them.
-const RENDER_TIMESERIES_CHART_TOOL: McpToolDef = {
-  serverName: 'builtin',
-  toolName: 'render_timeseries_chart',
-  exposedName: 'render_timeseries_chart',
-  description:
-    'Render a Torque-branded time-series line chart (a metric over days/weeks). ' +
-    'PREFER this over render_chart when the answer is a single metric across ' +
-    'consecutive dates — it formats dates as "May 22", sets the unit, and ' +
-    'titles the chart properly. Pass ISO date strings ("2026-05-22").\n' +
-    'Good example: points=[{date:"2026-05-22",value:347200}, …], ' +
-    'title:"$TRUMP daily unique holders — May 22–28", seriesLabel:"Holders", ' +
-    'unit:"wallets".',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      title: {
-        type: 'string',
-        description: 'Specific title incl. project + metric + date range. Required.',
-      },
-      seriesLabel: { type: 'string', description: 'What the line represents (e.g. "Holders","Swaps","Volume").' },
-      unit: { type: 'string', description: 'Y-axis unit ("wallets","$TRUMP","USD","%").' },
-      points: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            date: { type: 'string', description: 'ISO date "2026-05-22"; preset reformats.' },
-            value: { type: 'number' },
-          },
-          required: ['date', 'value'],
-        },
-        description: 'Time-ordered points (≤10).',
-      },
-    },
-    required: ['title', 'seriesLabel', 'unit', 'points'],
-  },
-};
-
 // Exposed only when the tenant has knowledge-base entries (see runTenantTurn).
 const SEARCH_KNOWLEDGE_TOOL: McpToolDef = {
   serverName: 'builtin',
@@ -313,53 +327,37 @@ async function runBuiltinTool(
     if (!query) return '[search_knowledge requires a query]';
     return searchKnowledge(tenant.id, query);
   }
-  if (
-    toolName === 'render_chart' ||
-    toolName === 'render_leaderboard_chart' ||
-    toolName === 'render_timeseries_chart'
-  ) {
-    // Shared per-turn cap across all three chart tools.
+  if (toolName === 'render_holder_card') {
     if (attachments.length >= 2) {
-      return `[${toolName} limit reached for this turn — at most 2 charts per reply]`;
+      return '[render_holder_card limit reached for this turn — at most 2 attachments per reply]';
     }
     try {
-      let spec: ChartSpec;
-      if (toolName === 'render_leaderboard_chart') {
-        const a = args as {
-          title?: string;
-          valueLabel?: string;
-          unit?: string;
-          rows?: Array<{ wallet: string; value: number }>;
-        };
-        if (!a.rows || a.rows.length === 0) return '[render_leaderboard_chart: rows is required and non-empty]';
-        spec = leaderboardSpec(a.rows, {
-          title: a.title ?? '',
-          valueLabel: a.valueLabel ?? 'Value',
-          unit: a.unit,
-        });
-      } else if (toolName === 'render_timeseries_chart') {
-        const a = args as {
-          title?: string;
-          seriesLabel?: string;
-          unit?: string;
-          points?: Array<{ date: string; value: number }>;
-        };
-        if (!a.points || a.points.length === 0) return '[render_timeseries_chart: points is required and non-empty]';
-        spec = timeseriesSpec(a.points, {
-          title: a.title ?? '',
-          seriesLabel: a.seriesLabel ?? 'Value',
-          unit: a.unit,
-        });
-      } else {
-        spec = args as unknown as ChartSpec;
+      const spec = args as unknown as HolderCardSpec;
+      if (!spec.rows || spec.rows.length === 0) {
+        return '[render_holder_card: rows is required and non-empty]';
       }
+      const png = await renderHolderCard(spec);
+      const safeName = `${spec.symbol ?? 'holders'}_card`.replace(/[^\w.-]+/g, '_').slice(0, 40);
+      attachments.push({ name: `${safeName}.png`, png });
+      return `[holder card rendered: "${spec.dataTitle}" — will be attached to the reply]`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'render failed';
+      return `[render_holder_card failed: ${msg}]`;
+    }
+  }
+  if (toolName === 'render_chart') {
+    if (attachments.length >= 2) {
+      return '[render_chart limit reached for this turn — at most 2 attachments per reply]';
+    }
+    try {
+      const spec = args as unknown as ChartSpec;
       const png = await renderChart(spec);
       const safeName = String(spec.title ?? 'chart').replace(/[^\w.-]+/g, '_').slice(0, 40) || 'chart';
       attachments.push({ name: `${safeName}.png`, png });
       return `[chart rendered: "${spec.title}" — will be attached to the reply]`;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'render failed';
-      return `[${toolName} failed: ${msg}]`;
+      return `[render_chart failed: ${msg}]`;
     }
   }
   return `[unknown builtin tool: ${toolName}]`;
@@ -496,9 +494,8 @@ export async function runTenantTurn(
       ...session.tools,
       ...(ingesterSession ? ingesterSession.tools : []),
       ...BUILTIN_TOOLS,
+      RENDER_HOLDER_CARD_TOOL,
       RENDER_CHART_TOOL,
-      RENDER_LEADERBOARD_CHART_TOOL,
-      RENDER_TIMESERIES_CHART_TOOL,
       ...(hasKnowledge ? [SEARCH_KNOWLEDGE_TOOL] : []),
     ].filter((t) => isAllowed(t.serverName, t.toolName));
     const toolsParam: ChatCompletionTool[] | undefined = exposedTools.length > 0
