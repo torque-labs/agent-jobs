@@ -262,6 +262,10 @@ function buildSpecs(): ServerSpec[] {
 // remote DB) block initMcp — which is awaited before the HTTP server listens. A
 // timeout rejects -> caught by initMcp's per-spec try/catch -> scheduleRestart (non-fatal).
 const MCP_START_TIMEOUT_MS = Number(process.env.MCP_START_TIMEOUT_MS ?? 20000);
+// Per-call request timeouts (the SDK default of 60s is tight for ask_torque and
+// for partitioned-table ingester SQL). Override via env without redeploy.
+const MCP_CALL_TIMEOUT_MS = Number(process.env.MCP_CALL_TIMEOUT_MS ?? 120_000);
+const MCP_INGESTER_TIMEOUT_MS = Number(process.env.MCP_INGESTER_TIMEOUT_MS ?? 180_000);
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
     promise,
@@ -439,7 +443,11 @@ export async function callTool(serverName: string, toolName: string, args: Recor
   if (!managed) throw new Error(`MCP server "${serverName}" not registered`);
   if (!managed.client) throw new Error(`MCP server "${serverName}" not connected (restart pending)`);
 
-  const result = await managed.client.callTool({ name: toolName, arguments: args });
+  const result = await managed.client.callTool(
+    { name: toolName, arguments: args },
+    undefined,
+    { timeout: MCP_CALL_TIMEOUT_MS },
+  );
   return normalizeToolResult(result);
 }
 
@@ -556,7 +564,11 @@ export async function openTenantTorqueSession(
       if (!isTorqueReadonlyTool(toolName)) {
         throw new Error(`tool ${toolName} is not permitted (read-only allow-list)`);
       }
-      const result = await client.callTool({ name: toolName, arguments: args });
+      const result = await client.callTool(
+        { name: toolName, arguments: args },
+        undefined,
+        { timeout: MCP_CALL_TIMEOUT_MS },
+      );
       return normalizeToolResult(result);
     },
     close: async () => {
@@ -629,7 +641,11 @@ export async function openIngesterSession(databaseUrl: string): Promise<TenantTo
       if (!isIngesterReadonlyTool(toolName)) {
         throw new Error(`tool ${toolName} is not permitted (ingester read-only allow-list)`);
       }
-      const result = await client.callTool({ name: toolName, arguments: args });
+      const result = await client.callTool(
+        { name: toolName, arguments: args },
+        undefined,
+        { timeout: MCP_INGESTER_TIMEOUT_MS },
+      );
       return normalizeToolResult(result);
     },
     close: async () => {
