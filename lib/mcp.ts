@@ -14,7 +14,7 @@ import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotoc
 // -> dist/index.js via `node <path>`) instead of `npx`, so the version is
 // lockfile-enforced and integrity-checked rather than re-resolved from the
 // registry on every spawn. Until then these exact pins are the mitigation.
-export const TORQUE_MCP_VERSION = '0.4.8';
+export const TORQUE_MCP_VERSION = '0.4.9-alpha.1';
 export const SUPABASE_MCP_VERSION = '0.8.1';
 const TORQUE_MCP_PKG = `@torque-labs/mcp@${TORQUE_MCP_VERSION}`;
 const SUPABASE_MCP_PKG = `@supabase/mcp-server-supabase@${SUPABASE_MCP_VERSION}`;
