@@ -85,9 +85,11 @@ function state(): GlobalState {
 // tool appears it must be added here explicitly (fail-closed by default).
 // `ask_torque` dropped 2026-05-28 (per memory feedback_torque_mcp_auth + live
 // observation): bug-prone for numeric questions AND consistently hits the
-// 120s MCP timeout. Agents wasted 4+ minutes per turn retrying it. Removing
-// from schema so the model can't reach for it; it falls through to
-// preview_incentive_query / generate_incentive_query which are reliable.
+// 120s MCP timeout. Agents wasted 4+ minutes per turn retrying it.
+// `query_indexer_sql` added 2026-05-29: direct read-only SQL against the
+// indexer DB returns full result sets in one round-trip vs preview's sample
+// rows. Both kept available — soul steers the agent toward query_indexer_sql
+// for analytics; preview_incentive_query remains for debugging query shapes.
 export const TORQUE_READONLY_TOOLS: ReadonlySet<string> = new Set([
   // session-scoping only (no data mutation) — needed so project-scoped reads
   // don't stall waiting for an active project. Sets session state, writes nothing.
@@ -99,6 +101,7 @@ export const TORQUE_READONLY_TOOLS: ReadonlySet<string> = new Set([
   'list_recurring_incentives',
   'preview_incentive_query',
   'generate_incentive_query',
+  'query_indexer_sql',
   'list_custom_events',
   'list_idls',
   'list_api_keys',
