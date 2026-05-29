@@ -144,6 +144,16 @@ function validateSection(s: Section, warnings: string[]): Section | null {
         warnings.push('big_number dropped — value required.');
         return null;
       }
+      // Clamp/drop cap meter if malformed.
+      if (s.cap) {
+        if (typeof s.cap.pct !== 'number' || !Number.isFinite(s.cap.pct)) {
+          warnings.push('big_number.cap dropped — pct must be a finite number.');
+          const { cap: _drop, ...rest } = s;
+          return rest;
+        }
+        const pct = Math.max(0, Math.min(100, s.cap.pct));
+        return { ...s, cap: { ...s.cap, pct } };
+      }
       return s;
     }
     case 'kv_strip': {
@@ -171,7 +181,16 @@ function validateSection(s: Section, warnings: string[]): Section | null {
         warnings.push('sparkline dropped — need at least 2 finite points.');
         return null;
       }
-      return { ...s, series: series.slice(0, CARD_LIMITS.SPARKLINE_MAX) };
+      // Drop reference line if malformed; clamp series first.
+      const next = { ...s, series: series.slice(0, CARD_LIMITS.SPARKLINE_MAX) };
+      if (s.reference) {
+        if (typeof s.reference.value !== 'number' || !Number.isFinite(s.reference.value)) {
+          warnings.push('sparkline.reference dropped — value must be a finite number.');
+          const { reference: _drop, ...rest } = next;
+          return rest;
+        }
+      }
+      return next;
     }
     case 'histogram': {
       if (!Array.isArray(s.bins) || s.bins.length === 0) {

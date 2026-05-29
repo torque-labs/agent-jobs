@@ -171,9 +171,15 @@ const RENDER_CARD_TOOL: McpToolDef = {
     '\n' +
     'PICK SECTIONS BY QUESTION SHAPE:\n' +
     ' • Top-N / leaderboard → `data_rows` with `rank`+`pct` + `kv_strip` insights.\n' +
-    ' • Trend over time → `sparkline` + `kv_strip` (current/delta/observation).\n' +
+    ' • Trend over time → `sparkline` + `kv_strip` (current/delta/observation). ' +
+    'When the question is "vs baseline/target" (e.g. "volume vs baseline", ' +
+    '"signups vs goal"), add `sparkline.reference:{value,label}` — draws a ' +
+    'dashed line at that value so the comparison is visual.\n' +
     ' • Single hero number ("current epoch", "claim rate", "total participants") ' +
-    '→ `big_number` (+ optional `callout`/`kv_strip` for context).\n' +
+    '→ `big_number` (+ optional `callout`/`kv_strip` for context). When the ' +
+    'metric has a cap, budget, or goal (e.g. "$3,210 of $5,000 daily cap", ' +
+    '"$1.2M of $5M budget"), add `big_number.cap:{pct,label}` — renders a ' +
+    'progress meter beneath (blue<75%, yellow 75-94%, red≥95%).\n' +
     ' • Two things compared → `comparison`.\n' +
     ' • Distribution / breakdown by bucket / by category → `histogram` + ' +
     '`kv_strip` takeaway. (NOT a separate chart tool — use render_card with a ' +
@@ -213,7 +219,13 @@ const RENDER_CARD_TOOL: McpToolDef = {
     '  {type:"kv_strip", rows:[{key:"30d change", val:"+2,580 holders", accent:"ok"}]}]}\n' +
     '\n' +
     'Example — hero number: { symbol:"$trump", label:"epoch status", sections:[\n' +
-    '  {type:"big_number", title:"current epoch", value:"14", label:"of 16", context:"2 epochs remaining"}]}',
+    '  {type:"big_number", title:"current epoch", value:"14", label:"of 16", context:"2 epochs remaining"}]}\n' +
+    '\n' +
+    'Example — cap / utilization: { symbol:"xrp", label:"pilot · day 2 of 5", sections:[\n' +
+    '  {type:"big_number", title:"rebate pool", value:"$3,210", label:"paid today", cap:{pct:64.2, label:"$3,210 / $5,000 daily cap"}}]}\n' +
+    '\n' +
+    'Example — trend vs baseline: { symbol:"xrp", label:"volume · 7d", sections:[\n' +
+    '  {type:"sparkline", title:"daily volume", series:[38000,41500,52000,39400,44200,870000,1780000], reference:{value:44000, label:"pre-pilot baseline ($44k median)"}, start:"may 22", end:"may 28", endValue:"$1.78M", delta:{value:"40× baseline", direction:"up"}}]}',
   inputSchema: {
     type: 'object',
     properties: {

@@ -82,6 +82,13 @@ export type BigNumber = {
   label?: string;
   delta?: { value: string; direction: 'up' | 'down' | 'flat' };
   context?: string;
+  /**
+   * Optional cap/utilization meter rendered beneath the value. `pct` is the
+   * fill percentage 0-100. `label` is the pre-formatted "used / cap" string
+   * (e.g. "$3,200 / $5,000 daily cap"). Use for cap utilization, budget burn,
+   * goal progress.
+   */
+  cap?: { pct: number; label?: string };
 };
 
 export type KvRow = {
@@ -115,6 +122,13 @@ export type Sparkline = {
   endValue?: string;
   delta?: { value: string; direction: 'up' | 'down' | 'flat' };
   zeroBaseline?: boolean;
+  /**
+   * Optional horizontal reference line drawn at `value` (same units as
+   * series). Use for baseline, target, or threshold comparison
+   * (e.g. "volume vs $44k baseline"). The reference value is included in the
+   * y-axis range so the line is always visible.
+   */
+  reference?: { value: number; label?: string };
 };
 
 export type HistogramBin = { label: string; value: number; highlight?: boolean };

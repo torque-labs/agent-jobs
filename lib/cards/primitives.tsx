@@ -339,6 +339,13 @@ export function renderBigNumber(p: BigNumber): ReactElement {
   const arrow = dir === 'up' ? '↑' : dir === 'down' ? '↓' : '→';
   // Shrink value font when long.
   const valueFont = value.length > 8 ? 56 : value.length > 5 ? 72 : 88;
+  const capPct = p.cap ? Math.max(0, Math.min(100, p.cap.pct)) : 0;
+  // Color the meter by saturation: green well below cap, yellow approaching,
+  // red at/over cap.
+  const capColor =
+    capPct >= 95 ? P.accentRed : capPct >= 75 ? P.accentYellow : P.accentBlue;
+  const capDim =
+    capPct >= 95 ? 'rgba(227,123,107,0.18)' : capPct >= 75 ? P.accentYellowDim : P.accentBlueDim;
   return (
     <Col>
       {p.title ? renderSectionRuleInternal(p.title) : null}
@@ -358,6 +365,37 @@ export function renderBigNumber(p: BigNumber): ReactElement {
             </span>
           </Row>
         ) : null}
+        {p.cap ? (
+          <Col style={{ marginTop: 14 }}>
+            <div style={{ position: 'relative', width: '100%', height: 8, display: 'flex' }}>
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  height: '100%',
+                  backgroundColor: capDim,
+                }}
+              />
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: `${capPct}%`,
+                  height: '100%',
+                  backgroundColor: capColor,
+                }}
+              />
+            </div>
+            {p.cap.label ? (
+              <Row style={{ marginTop: 6 }}>
+                <span style={{ color: P.textSecondary, fontSize: 12 }}>{truncate(p.cap.label, 80)}</span>
+              </Row>
+            ) : null}
+          </Col>
+        ) : null}
         {p.context ? (
           <Row style={{ marginTop: 6 }}>
             <span style={{ color: P.textSecondary, fontSize: 12 }}>{truncate(p.context, 120)}</span>
@@ -372,6 +410,7 @@ export function estimateBigNumberHeight(p: BigNumber): number {
   let h = p.title ? SECTION_RULE_HEIGHT : 0;
   h += 12 + 88; // top pad + value
   if (p.delta) h += 8 + 18;
+  if (p.cap) h += 14 + 8 + (p.cap.label ? 6 + 16 : 0);
   if (p.context) h += 6 + 16;
   return h + 18;
 }
@@ -466,32 +505,56 @@ export function estimateComparisonHeight(p: Comparison): number {
 
 // --- sparkline (SVG line) -----------------------------------------------
 
-function buildSparklinePath(series: number[], w: number, h: number, zero: boolean): string {
-  if (series.length < 2) return '';
-  const min = zero ? 0 : Math.min(...series);
-  const max = Math.max(...series);
+function buildSparklinePath(
+  series: number[],
+  w: number,
+  h: number,
+  zero: boolean,
+  refValue?: number,
+): { path: string; refY: number | null } {
+  if (series.length < 2) return { path: '', refY: null };
+  const refIncluded = typeof refValue === 'number' && Number.isFinite(refValue);
+  const min = zero
+    ? 0
+    : refIncluded
+      ? Math.min(...series, refValue!)
+      : Math.min(...series);
+  const max = refIncluded ? Math.max(...series, refValue!) : Math.max(...series);
   const range = max === min ? 1 : max - min;
   const step = w / (series.length - 1);
-  return series
+  const path = series
     .map((v, i) => {
       const x = i * step;
       const y = h - ((v - min) / range) * h;
       return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(' ');
+  const refY = refIncluded ? h - ((refValue! - min) / range) * h : null;
+  return { path, refY };
 }
 
 export function renderSparkline(p: Sparkline): ReactElement {
   const series = p.series.filter((v) => Number.isFinite(v));
   const w = CARD_WIDTH - PAD_X * 2;
   const h = 76;
-  const path = buildSparklinePath(series, w, h, Boolean(p.zeroBaseline));
+  const { path, refY } = buildSparklinePath(
+    series,
+    w,
+    h,
+    Boolean(p.zeroBaseline),
+    p.reference?.value,
+  );
   const areaPath = path ? `${path} L${w},${h} L0,${h} Z` : '';
   const dir = p.delta?.direction;
   const deltaColor = dir === 'up' ? P.accentGreen : dir === 'down' ? P.accentRed : P.textSecondary;
   const arrow = dir === 'up' ? '↑' : dir === 'down' ? '↓' : '→';
   // satori doesn't support real <svg> sub-elements; embed via data URL <img>.
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><path d="${areaPath}" fill="${P.accentBlueDim}"/><path d="${path}" stroke="${P.accentBlue}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  // Reference line: dashed horizontal at the y-coordinate of refValue.
+  const refLineSvg =
+    refY !== null
+      ? `<line x1="0" y1="${refY.toFixed(2)}" x2="${w}" y2="${refY.toFixed(2)}" stroke="${P.accentYellow}" stroke-width="1" stroke-dasharray="4 4" opacity="0.7"/>`
+      : '';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><path d="${areaPath}" fill="${P.accentBlueDim}"/><path d="${path}" stroke="${P.accentBlue}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>${refLineSvg}</svg>`;
   const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
   return (
     <Col>
@@ -499,6 +562,13 @@ export function renderSparkline(p: Sparkline): ReactElement {
       <Col style={{ padding: '6px 22px 12px' }}>
         {/* eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text */}
         <img src={dataUrl} width={w} height={h} />
+        {p.reference?.label ? (
+          <Row style={{ marginTop: 4 }}>
+            <span style={{ color: P.accentYellow, fontSize: 11, letterSpacing: 0.4 }}>
+              {`— — ${truncate(p.reference.label, 60)}`}
+            </span>
+          </Row>
+        ) : null}
         <Row style={{ marginTop: 6, alignItems: 'baseline' }}>
           {p.start ? <span style={{ color: P.textTertiary, fontSize: 11 }}>{p.start}</span> : null}
           <Row style={{ flex: 1 }} />
@@ -518,7 +588,12 @@ export function renderSparkline(p: Sparkline): ReactElement {
 }
 
 export function estimateSparklineHeight(p: Sparkline): number {
-  return (p.title ? SECTION_RULE_HEIGHT : 0) + 6 + 76 + 6 + 22 + 12;
+  return (
+    (p.title ? SECTION_RULE_HEIGHT : 0) +
+    6 + 76 +
+    (p.reference?.label ? 4 + 16 : 0) +
+    6 + 22 + 12
+  );
 }
 
 // --- histogram (vertical bars) -----------------------------------------
