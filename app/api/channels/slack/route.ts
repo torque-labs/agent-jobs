@@ -4,7 +4,7 @@ import { runTenantTurn, type TurnAttachment } from '@/lib/agent-runtime';
 import { getTenantBySlackChannel } from '@/lib/tenants';
 import { gateSlack } from '@/lib/mention';
 import { claimEvent } from '@/lib/dedupe';
-import { postSlackFile } from '@/lib/channels';
+import { postSlackFile, markdownToSlackMrkdwn } from '@/lib/channels';
 import type { Tenant } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -231,13 +231,14 @@ async function postSlackReply(
     return;
   }
   const charts = attachments ?? [];
-  // One-chart, no-thread case → bundle into a single files.upload with initial_comment.
-  if (charts.length === 1 && !threadTs) {
-    await postSlackFile(botToken, channel, charts[0].png, charts[0].name, text);
+  // One-chart case → bundle into completeUploadExternal with initial_comment +
+  // thread_ts (v2 upload supports both, unlike the legacy single-request flow).
+  if (charts.length === 1) {
+    await postSlackFile(botToken, channel, charts[0].png, charts[0].name, text, threadTs);
     return;
   }
   for (const a of charts) {
-    await postSlackFile(botToken, channel, a.png, a.name);
+    await postSlackFile(botToken, channel, a.png, a.name, undefined, threadTs);
   }
   if (!text) return;
   const res = await fetch('https://slack.com/api/chat.postMessage', {
@@ -246,7 +247,11 @@ async function postSlackReply(
       'content-type': 'application/json; charset=utf-8',
       authorization: `Bearer ${botToken}`,
     },
-    body: JSON.stringify({ channel, text, ...(threadTs ? { thread_ts: threadTs } : {}) }),
+    body: JSON.stringify({
+      channel,
+      text: markdownToSlackMrkdwn(text),
+      ...(threadTs ? { thread_ts: threadTs } : {}),
+    }),
   });
   const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
   if (!data.ok) {

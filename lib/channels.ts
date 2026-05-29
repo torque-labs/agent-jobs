@@ -75,7 +75,7 @@ async function postSlack(token: string, channel: string, text: string): Promise<
     const res = await fetch('https://slack.com/api/chat.postMessage', {
       method: 'POST',
       headers: { 'content-type': 'application/json; charset=utf-8', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ channel, text: truncate(text, 39000) }),
+      body: JSON.stringify({ channel, text: truncate(markdownToSlackMrkdwn(text), 39000) }),
     });
     const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
     if (!data.ok) console.error(`[channels] slack postMessage failed: ${data.error ?? res.status}`);
@@ -87,10 +87,25 @@ async function postSlack(token: string, channel: string, text: string): Promise<
 }
 
 /**
- * Slack `files.upload`: legacy single-request multipart upload. Still works
- * as of 2026 and is simpler than the new files.getUploadURLExternal three-step
- * flow. `initial_comment` is the message text rendered above the image —
- * Slack's equivalent of Telegram's caption, no length cap.
+ * Convert standard CommonMark to Slack mrkdwn. The agent writes `**bold**`
+ * per CommonMark; Slack mrkdwn uses `*bold*`. Conversion is non-greedy and
+ * single-line to avoid eating across paragraphs / code fences. We don't
+ * convert italic (`*x*` → `_x_`) because the agent rarely uses single-`*`
+ * italic and the conversion would clash with the bold output.
+ */
+export function markdownToSlackMrkdwn(text: string): string {
+  return text.replace(/\*\*([^*\n]+?)\*\*/g, '*$1*');
+}
+
+/**
+ * Slack file upload via the v2 three-step flow:
+ *   1. files.getUploadURLExternal → upload_url + file_id
+ *   2. POST the bytes to upload_url
+ *   3. files.completeUploadExternal → share to channel (+initial_comment, +thread_ts)
+ *
+ * Slack hard-deprecated the legacy single-request files.upload endpoint in
+ * late 2025 — calls silently fail (ok:false with method_deprecated) even
+ * though the HTTP status is 200. v2 is mandatory.
  *
  * Exported for the live webhook routes (same reason as postTelegramPhoto).
  */
@@ -100,24 +115,64 @@ export async function postSlackFile(
   png: Buffer,
   filename: string,
   initialComment?: string,
+  threadTs?: string,
 ): Promise<boolean> {
   try {
-    const form = new FormData();
-    form.set('channels', channel);
-    form.set('filename', filename);
-    form.set('filetype', 'png');
-    if (initialComment) form.set('initial_comment', truncate(initialComment, 39000));
-    form.set('file', new Blob([new Uint8Array(png)], { type: 'image/png' }), filename);
-    const res = await fetch('https://slack.com/api/files.upload', {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}` },
-      body: form,
+    const step1Body = new URLSearchParams({
+      filename,
+      length: String(png.byteLength),
     });
-    const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
-    if (!data.ok) console.error(`[channels] slack files.upload failed: ${data.error ?? res.status}`);
-    return Boolean(data.ok);
+    const step1 = await fetch('https://slack.com/api/files.getUploadURLExternal', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: step1Body,
+    });
+    const step1Data = (await step1.json().catch(() => ({}))) as {
+      ok?: boolean;
+      error?: string;
+      upload_url?: string;
+      file_id?: string;
+    };
+    if (!step1Data.ok || !step1Data.upload_url || !step1Data.file_id) {
+      console.error(`[channels] slack files.getUploadURLExternal failed: ${step1Data.error ?? step1.status}`);
+      return false;
+    }
+
+    const form = new FormData();
+    form.set('file', new Blob([new Uint8Array(png)], { type: 'image/png' }), filename);
+    const step2 = await fetch(step1Data.upload_url, { method: 'POST', body: form });
+    if (!step2.ok) {
+      console.error(`[channels] slack upload-url POST failed: ${step2.status}`);
+      return false;
+    }
+
+    const step3Body: Record<string, unknown> = {
+      files: [{ id: step1Data.file_id, title: filename }],
+      channel_id: channel,
+    };
+    if (initialComment) {
+      step3Body.initial_comment = truncate(markdownToSlackMrkdwn(initialComment), 39000);
+    }
+    if (threadTs) step3Body.thread_ts = threadTs;
+    const step3 = await fetch('https://slack.com/api/files.completeUploadExternal', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${token}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(step3Body),
+    });
+    const step3Data = (await step3.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+    if (!step3Data.ok) {
+      console.error(`[channels] slack files.completeUploadExternal failed: ${step3Data.error ?? step3.status}`);
+      return false;
+    }
+    return true;
   } catch (err) {
-    console.error('[channels] slack files.upload error:', err instanceof Error ? err.name : 'error');
+    console.error('[channels] slack upload error:', err instanceof Error ? err.name : 'error');
     return false;
   }
 }
