@@ -184,6 +184,10 @@ const RENDER_CARD_TOOL: McpToolDef = {
     'Telegram flattens it. mini_table is your ONLY way to display multi-column ' +
     'rows; use it whenever you would have written a Markdown table.\n' +
     ' • Mixed: combine. Max 8 sections per card.\n' +
+    ' • AT MOST ONE render_card call per turn — your second call will be ' +
+    'rejected. Get the spec right the first time. If you need to show ' +
+    "multiple shapes (e.g. ranked list AND insights), put them as separate " +
+    'SECTIONS inside a single render_card call, not multiple cards.\n' +
     '\n' +
     'VOICE RULES (STRICT):\n' +
     ' • NEVER name statistical metrics like HHI, Gini, p-value, z-score, R². ' +
@@ -424,8 +428,15 @@ async function runBuiltinTool(
     return searchKnowledge(tenant.id, query);
   }
   if (toolName === 'render_card') {
-    if (attachments.length >= 2) {
-      return '[render_card limit reached for this turn — at most 2 attachments per reply]';
+    // ONE card per turn — second call returns a hard rejection telling the
+    // model to work with what it already rendered. Multiple cards per reply
+    // cluttered chat threads in production.
+    if (attachments.length >= 1) {
+      return (
+        '[render_card already called this turn — only ONE card per reply. ' +
+        'The card you already rendered is what the user will see. ' +
+        'Write your text reply around it; do NOT call render_card again.]'
+      );
     }
     try {
       const spec = args as unknown as CardSpec;
@@ -763,6 +774,19 @@ export async function runTenantTurn(
       finalText = 'I ran out of steps working on that. Could you rephrase or narrow the question?';
     }
 
+    // Defensive post-process: strip Markdown tables the model might have
+    // written in the final reply despite the soul rule. Telegram flattens
+    // these into unreadable lines. Detected by a separator row `|---|---|`
+    // surrounded by a header row above and data rows below. Replaced inline
+    // with a one-liner pointing the user toward the rendered card.
+    const stripResult = stripMarkdownTables(finalText);
+    if (stripResult.stripped) {
+      console.log(
+        `[turn] tenant=${tenant.slug} stripped Markdown table from reply (soul violation)`,
+      );
+      finalText = stripResult.text;
+    }
+
     // Best-effort token/cost accounting — never fail the turn on a write error.
     try {
       await recordUsage(tenant.id, tenant.model, tokensIn, tokensOut);
@@ -866,6 +890,42 @@ export async function runTenantTurn(
     await session.close();
     if (ingesterSession) await ingesterSession.close();
   }
+}
+
+/**
+ * Strip Markdown tables from a model's reply (defensive backstop for the soul
+ * "HARD STOP" rule that models intermittently ignore). Detected pattern:
+ *  - a separator row that's all `|`, `-`, `:`, and whitespace (e.g. `|---|---|`)
+ *  - the line above is treated as the header (removed)
+ *  - consecutive lines below matching `| ... |` are treated as data rows (removed)
+ * Replaces the whole block with a one-line placeholder pointing at render_card.
+ * Returns `{ text, stripped }` so the caller can log telemetry.
+ */
+function stripMarkdownTables(input: string): { text: string; stripped: boolean } {
+  const lines = input.split('\n');
+  const out: string[] = [];
+  let stripped = false;
+  let i = 0;
+  const separatorRe = /^\s*\|[\-:\s|]+\|\s*$/;
+  const tableRowRe = /^\s*\|.*\|\s*$/;
+  while (i < lines.length) {
+    if (separatorRe.test(lines[i])) {
+      // Drop trailing header row above the separator (if it looks like a table row).
+      if (out.length > 0 && tableRowRe.test(out[out.length - 1])) {
+        out.pop();
+      }
+      // Skip the separator.
+      i += 1;
+      // Skip consecutive data rows.
+      while (i < lines.length && tableRowRe.test(lines[i])) i += 1;
+      out.push('(table omitted — ask for a card view if you want the breakdown.)');
+      stripped = true;
+      continue;
+    }
+    out.push(lines[i]);
+    i += 1;
+  }
+  return { text: out.join('\n'), stripped };
 }
 
 /**
