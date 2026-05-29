@@ -28,7 +28,12 @@ export async function runRoutine(routineId: string): Promise<{ ok: boolean; deta
       conversationId: `routine:${routineId}`,
       history: [],
     });
-    const { targets, delivered } = await deliverToTenant(tenant, routine.channel, result.reply);
+    const { targets, delivered } = await deliverToTenant(
+      tenant,
+      routine.channel,
+      result.reply,
+      result.attachments,
+    );
     const status =
       process.env[`${routine.channel.toUpperCase()}_SEND_DISABLED`] === 'true'
         ? `ok (dry-run, ${targets} target(s))`
