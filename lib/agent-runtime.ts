@@ -791,16 +791,22 @@ export async function runTenantTurn(
     }
 
     // Defensive post-process: strip Markdown tables the model might have
-    // written in the final reply despite the soul rule. Telegram flattens
-    // these into unreadable lines. Detected by a separator row `|---|---|`
-    // surrounded by a header row above and data rows below. Replaced inline
-    // with a one-liner pointing the user toward the rendered card.
-    const stripResult = stripMarkdownTables(finalText);
-    if (stripResult.stripped) {
-      console.log(
-        `[turn] tenant=${tenant.slug} stripped Markdown table from reply (soul violation)`,
-      );
-      finalText = stripResult.text;
+    // written in the final reply despite the soul rule. Telegram + Slack both
+    // flatten `|---|---|` into unreadable lines. Detected by a separator row
+    // `|---|---|` surrounded by a header row above and data rows below.
+    //
+    // Conditional: ONLY strip when a card was actually rendered, since the card
+    // is the replacement. When NO card exists, the raw table is degraded but at
+    // least informative — replacing it with "(table omitted)" leaves the user
+    // with neither view of the data, which is worse than the flattened table.
+    if (attachments.length > 0) {
+      const stripResult = stripMarkdownTables(finalText);
+      if (stripResult.stripped) {
+        console.log(
+          `[turn] tenant=${tenant.slug} stripped Markdown table from reply (card already rendered)`,
+        );
+        finalText = stripResult.text;
+      }
     }
 
     // Best-effort token/cost accounting — never fail the turn on a write error.
