@@ -58,7 +58,7 @@ const TOOL_CALL_TIMEOUT_MS = 200_000;
 // individually, but multi-iteration turns can still exceed any reasonable
 // wall-clock; this is the hard cap so the user gets a clean "try narrowing
 // it" message instead of waiting indefinitely.
-const TURN_BUDGET_MS = 5 * 60_000;
+const TURN_BUDGET_MS = 10 * 60_000;
 
 /** A single prior message in the conversation, oldest first. */
 export type ConversationMessage = {
