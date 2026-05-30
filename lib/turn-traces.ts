@@ -19,6 +19,12 @@ export type ToolCallTrace = {
   ok: boolean;
   /** Scalar-only argument summary (capped 80 chars). Never raw SQL / wallets / PII. */
   args_summary?: string;
+  /** Full SQL query (capped 2000 chars). Populated ONLY for indexer SQL tools
+   *  (execute_raw_query / query_data) so we can debug the agent's query strategy
+   *  without surfacing args for unrelated tools (which may carry wallet lists). */
+  args_full?: string;
+  /** Compact result summary (e.g. "rows=42 time=120ms"). Populated for SQL tools. */
+  result_summary?: string;
   /** Error name (e.g. "TimeoutError") when ok=false. */
   err_name?: string;
 };

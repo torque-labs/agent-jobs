@@ -748,11 +748,13 @@ export async function runTenantTurn(
               console.log(
                 `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${dur}ms ok ${argSummary(args)}`,
               );
+              const sqlExtras = captureSqlDebug(def.toolName, args, body);
               toolTraces.push({
                 tool: def.toolName,
                 dur_ms: dur,
                 ok: true,
                 args_summary: argSummary(args) || undefined,
+                ...sqlExtras,
               });
               return { id: tc.id, content: body };
             } catch (err) {
@@ -761,12 +763,14 @@ export async function runTenantTurn(
               console.log(
                 `[turn] tenant=${tenant.slug} tool=${def.toolName} dur=${dur}ms FAIL ${errName}`,
               );
+              const sqlExtras = captureSqlDebug(def.toolName, args, null);
               toolTraces.push({
                 tool: def.toolName,
                 dur_ms: dur,
                 ok: false,
                 err_name: errName,
                 args_summary: argSummary(args) || undefined,
+                ...sqlExtras,
               });
               return { id: tc.id, content: `[tool error: ${(err as Error).message}]` };
             }
@@ -966,6 +970,39 @@ const RENDER_TOOL_NAMES: ReadonlySet<string> = new Set([
   'render_chart',
   'render_holder_card',
 ]);
+
+// Indexer SQL tools — for these we capture the full query + row count in the
+// trace so we can audit the agent's query strategy. Limited to SQL tools so we
+// don't accidentally surface arg payloads for tools that carry wallet lists or
+// PII (e.g. get_leaderboard args, which may include a recurringOfferId only,
+// but other Torque tools could carry richer data).
+const SQL_DEBUG_TOOLS: ReadonlySet<string> = new Set(['execute_raw_query', 'query_data']);
+
+function captureSqlDebug(
+  toolName: string,
+  args: Record<string, unknown>,
+  body: string | null,
+): { args_full?: string; result_summary?: string } {
+  if (!SQL_DEBUG_TOOLS.has(toolName)) return {};
+  const out: { args_full?: string; result_summary?: string } = {};
+  const q = typeof args.query === 'string' ? args.query : '';
+  if (q) out.args_full = q.length > 2000 ? q.slice(0, 2000) + '…' : q;
+  if (body) {
+    try {
+      const parsed = JSON.parse(body) as { rowCount?: number; execution_time_ms?: number };
+      if (typeof parsed.rowCount === 'number') {
+        out.result_summary =
+          `rows=${parsed.rowCount}` +
+          (typeof parsed.execution_time_ms === 'number'
+            ? ` time=${parsed.execution_time_ms}ms`
+            : '');
+      }
+    } catch {
+      // body wasn't JSON — skip; row count unavailable
+    }
+  }
+  return out;
+}
 
 /** First successful render-tool call wins. null if none fired (or all failed). */
 function pickRenderTool(traces: ToolCallTrace[]): string | null {
