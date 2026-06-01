@@ -756,7 +756,7 @@ export async function runTenantTurn(
                 args_summary: argSummary(args) || undefined,
                 ...sqlExtras,
               });
-              return { id: tc.id, content: body };
+              return { id: tc.id, content: capToolResponse(body) };
             } catch (err) {
               const dur = Date.now() - t0;
               const errName = (err as Error).name;
@@ -976,6 +976,18 @@ const RENDER_TOOL_NAMES: ReadonlySet<string> = new Set([
   'render_chart',
   'render_holder_card',
 ]);
+
+// Cap on the tool-result payload re-injected into the model's context. Big
+// query results (1000+ rows, 100KB+ JSON blobs) get carried into every
+// subsequent model call in the tool loop — context compounds geometrically.
+// Cap at 4KB per tool response; the agent sees a clear truncation marker and
+// can refine with COUNT/GROUP BY/LIMIT if it needs more.
+const TOOL_RESPONSE_CAP = 4000;
+function capToolResponse(body: string): string {
+  if (body.length <= TOOL_RESPONSE_CAP) return body;
+  const head = body.slice(0, TOOL_RESPONSE_CAP);
+  return `${head}\n\n[…tool response truncated from ${body.length} chars to ${TOOL_RESPONSE_CAP}. If you need a summary of the full result, refine the query with COUNT, GROUP BY, or a tighter WHERE filter.]`;
+}
 
 // Indexer SQL tools — for these we capture the full query + row count in the
 // trace so we can audit the agent's query strategy. Limited to SQL tools so we
