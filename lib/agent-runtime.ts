@@ -778,13 +778,22 @@ export async function runTenantTurn(
     let tokensOut = 0;
     let finalText: string | null = null;
 
+    // Children of dispatch_tasks use a cheap, fast, reliable model — gpt-4o-mini
+    // by default. The parent orchestrates + synthesizes (it gets the bigger
+    // model), children just need to focus on one tool-driven question. This
+    // saves ~5× per-token cost vs running all of it on the parent's model AND
+    // sidesteps long-tail provider-latency issues that have plagued V4 Pro on
+    // multi-step tool loops. Override via DISPATCH_CHILD_MODEL env var.
+    const childModel = process.env.DISPATCH_CHILD_MODEL || 'openai/gpt-4o-mini';
+    const childClient = selectClient(childModel);
+
     // Dispatch handler for the `dispatch_tasks` builtin. Runs 2-5 child agents
     // in parallel using closure-captured sessions (zero MCP spawn cost). Each
-    // child gets its own fresh context, a 60s budget, and 8 max iterations.
+    // child gets its own fresh context, a 90s budget, and 8 max iterations.
     // Child output goes back to the parent serialized as JSON.
     const dispatchHandler: DispatchHandler = async (tasks) => {
       const t0 = Date.now();
-      console.log(`[dispatch] tenant=${tenant.slug} fan-out=${tasks.length}`);
+      console.log(`[dispatch] tenant=${tenant.slug} fan-out=${tasks.length} child_model=${childModel}`);
       const results = await Promise.all(
         tasks.map(async (task) => {
           const childDeadline = Date.now() + 90_000;
@@ -817,8 +826,8 @@ export async function runTenantTurn(
                 break;
               }
               const completion = await callWithTimeout(
-                client.chat.completions.create({
-                  model: tenant.model,
+                childClient.chat.completions.create({
+                  model: childModel,
                   messages: childMessages,
                   tools: childToolsParam,
                   max_tokens: 2048,
