@@ -10,7 +10,13 @@ import { sql } from './db';
 export type StoredMessage = { role: 'user' | 'assistant'; content: string };
 
 /** How many recent messages to replay into a turn (≈ this/2 turns). */
-export const MEMORY_WINDOW = 20;
+// Rolling window of prior messages we re-inject into each turn's prompt.
+// Lowered 20 → 4 (2026-06-03) after insight-style turns started failing on
+// context-length errors — every prior insights reply was ~4-5KB of prose,
+// and 20× of those plus the soul plus per-turn tool results pushed past
+// DeepSeek V4 Pro's ~128K context limit. 4 messages = last 2 user/assistant
+// exchanges, enough for conversational continuity without runaway growth.
+export const MEMORY_WINDOW = 4;
 
 let _schema: Promise<void> | null = null;
 

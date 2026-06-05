@@ -1130,8 +1130,14 @@ export async function runTenantTurn(
     };
   } catch (err) {
     const label = err instanceof Error ? err.name : 'UnknownError';
+    // Capture both the name AND the message so we can tell context-length
+    // errors apart from rate-limit, timeout, JSON-parse, etc. Cap at 400 chars
+    // so a giant stack-trace from the provider SDK doesn't blow the trace row.
+    const message = err instanceof Error ? err.message : String(err);
+    const trimmedMessage = message.length > 400 ? message.slice(0, 400) + '…' : message;
+    const richLabel = trimmedMessage ? `${label}: ${trimmedMessage}` : label;
     console.log(
-      `[turn] tenant=${tenant.slug} FAILED dur=${Date.now() - turnT0}ms tools=${toolsUsed.length} err=${label}`,
+      `[turn] tenant=${tenant.slug} FAILED dur=${Date.now() - turnT0}ms tools=${toolsUsed.length} err=${richLabel}`,
     );
     // Persist the failed trace too — that's the most important eval signal.
     try {
@@ -1144,7 +1150,7 @@ export async function runTenantTurn(
         started_at: turnStartedAt,
         completed_at: new Date(),
         status: label === 'TimeoutError' || /timed out/.test(label) ? 'timeout' : 'failed',
-        err_label: label,
+        err_label: richLabel.slice(0, 500),
         tokens_in: 0,
         tokens_out: 0,
         tool_calls: toolTraces,
