@@ -787,17 +787,23 @@ export async function runTenantTurn(
       console.log(`[dispatch] tenant=${tenant.slug} fan-out=${tasks.length}`);
       const results = await Promise.all(
         tasks.map(async (task) => {
-          const childDeadline = Date.now() + 60_000;
+          const childDeadline = Date.now() + 90_000;
           const childToolsUsed: string[] = [];
           const childMessages: ChatCompletionMessageParam[] = [
             {
               role: 'system',
               content:
                 `You are a sub-agent dispatched by ${tenant.display_name}'s primary assistant ` +
-                'to answer ONE specific question. Use your tools to gather data, then return a ' +
-                'concise (≤120 word) finding. Plain text only — no markdown tables, no card ' +
-                'rendering (the parent handles synthesis). Focus on the specific task; do not ' +
-                'expand scope.',
+                'to answer ONE specific question. You have ~90s. Workflow:\n' +
+                '1. If the task touches indexer SQL or schema, FIRST call `search_knowledge` with ' +
+                'the relevant table or concept (e.g. "TokenBalance schema", "swap volume SQL", ' +
+                '"$TRUMP indexer tables"). The KB has vetted schemas and copy-paste SQL templates.\n' +
+                '2. Do NOT call `describe_table`, `get_schema`, `column_exists`, `list_tables`, or ' +
+                '`get_ai_context` for schema discovery — those each burn 5-30s and the KB already ' +
+                'has the answer. Only run them if `search_knowledge` returned nothing useful.\n' +
+                '3. Run the actual query, return a concise (≤120 word) finding in plain text.\n' +
+                'No markdown tables. No card rendering (the parent synthesizes). Stay scoped to ' +
+                'the exact task — do not expand.',
             },
             { role: 'user', content: task.prompt },
           ];
