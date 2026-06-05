@@ -803,16 +803,39 @@ export async function runTenantTurn(
               role: 'system',
               content:
                 `You are a sub-agent dispatched by ${tenant.display_name}'s primary assistant ` +
-                'to answer ONE specific question. You have ~90s. Workflow:\n' +
-                '1. If the task touches indexer SQL or schema, FIRST call `search_knowledge` with ' +
-                'the relevant table or concept (e.g. "TokenBalance schema", "swap volume SQL", ' +
-                '"$TRUMP indexer tables"). The KB has vetted schemas and copy-paste SQL templates.\n' +
-                '2. Do NOT call `describe_table`, `get_schema`, `column_exists`, `list_tables`, or ' +
-                '`get_ai_context` for schema discovery — those each burn 5-30s and the KB already ' +
-                'has the answer. Only run them if `search_knowledge` returned nothing useful.\n' +
-                '3. Run the actual query, return a concise (≤120 word) finding in plain text.\n' +
-                'No markdown tables. No card rendering (the parent synthesizes). Stay scoped to ' +
-                'the exact task — do not expand.',
+                'to answer ONE specific question. You have ~90s.\n' +
+                '\n' +
+                'INDEXER SCHEMA — THESE ARE THE EXACT COLUMN NAMES. DO NOT GUESS. DO NOT use ' +
+                '`wallet_address`, `user_address`, `rank`, `balance` — those columns do not exist.\n' +
+                '\n' +
+                '$TRUMP mint: `6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN` (decimals=6, divide raw `amount`/`amountIn`/`amountOut` by 1e6 for UI value)\n' +
+                '\n' +
+                'Tables (all in `public`, query as `"TableName"` for PascalCase):\n' +
+                '- `Token` — token registry. Cols: `mint` (text, PK), `name`, `symbol`, `decimals`.\n' +
+                '- `TokenBalance` — wallet balance snapshots, one row per balance-change event. ' +
+                'Cols: `id`, `account`, `owner`, `mint`, `amount` (bigint, raw), `slot`, ' +
+                '`signature`, `"createdAt"`, `"updatedAt"`, `"isPda"` (filter to FALSE for human wallets).\n' +
+                '- `TokenBalanceSnapshot` — same shape as TokenBalance but with `uiAmount` (double) ' +
+                'pre-divided. Cols: `owner`, `mint`, `uiAmount`, `"createdAt"`, `"isPda"`.\n' +
+                '- `tokenswap_partitioned` — DEX swap events (PRODUCTION; partitioned by day). ' +
+                'Cols: `id`, `protocol`, `"feePayer"` (the wallet that signed — your "trader" / ' +
+                '"buyer" column), `signature`, `slot`, `"tokenIn"` (mint), `"tokenOut"` (mint), ' +
+                '`"tokenInDecimal"`, `"tokenOutDecimal"`, `"amountIn"`, `"uiAmountIn"`, ' +
+                '`"amountOut"`, `"uiAmountOut"`, `"usdAmount"`, `"receivedAt"` (use this for time filters), ' +
+                '`"createdAt"`. ALWAYS quote camelCase: `"feePayer"`, `"tokenIn"`, `"receivedAt"`.\n' +
+                '\n' +
+                'STRICT RULES:\n' +
+                '1. NEVER call `describe_table`, `get_schema`, `column_exists`, `list_tables`, or ' +
+                '`get_table_sample` — every column you need is in the schema above. Calling those ' +
+                'will burn your budget and the result is already here.\n' +
+                '2. Filter $TRUMP swaps with: `"tokenIn" = \'6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN\' OR "tokenOut" = \'6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN\'`\n' +
+                '3. Buyer-side filter: `"tokenOut" = \'<TRUMP mint>\'`. Seller-side: `"tokenIn" = \'<TRUMP mint>\'`.\n' +
+                '4. Net buy/sell per wallet today = aggregate by `"feePayer"` over `"receivedAt"` range.\n' +
+                '5. For leaderboard/standings questions use `get_leaderboard` (typed Torque API), ' +
+                'NOT SQL — that\'s instant and authoritative.\n' +
+                '\n' +
+                'Return a concise (≤120 word) finding in plain text. No markdown tables. No card ' +
+                'rendering (the parent synthesizes). Stay scoped to the exact task — do not expand.',
             },
             { role: 'user', content: task.prompt },
           ];
