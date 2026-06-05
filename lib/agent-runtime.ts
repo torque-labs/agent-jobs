@@ -111,6 +111,7 @@ const BUILTIN_TOOL_NAMES: ReadonlySet<string> = new Set([
   'get_leaderboard',
   'search_knowledge',
   'render_card',
+  'dispatch_tasks',
 ]);
 function isBuiltinTool(toolName: string): boolean {
   return BUILTIN_TOOL_NAMES.has(toolName);
@@ -135,6 +136,46 @@ const BUILTIN_TOOLS: McpToolDef[] = [
         limit: { type: 'number', description: 'How many top rows (default 50, max 200).' },
       },
       required: ['recurringOfferId'],
+    },
+  },
+  {
+    serverName: 'builtin',
+    toolName: 'dispatch_tasks',
+    exposedName: 'dispatch_tasks',
+    description:
+      'Fan out 2-5 INDEPENDENT research tasks in parallel. Each task runs as a fresh sub-agent ' +
+      'with its own context — no shared state, no accumulated tool results between tasks. The ' +
+      'sub-agents share your MCP sessions so there is no spawn cost, but they CANNOT call ' +
+      "render_card or dispatch_tasks (only you can render the final synthesis). Returns one " +
+      'array entry per task with the sub-agent\'s text result. Use ONLY when you have multiple ' +
+      'truly independent checks (e.g. 5 different anomaly lenses, comparing different time ranges, ' +
+      'querying for unrelated facts). DO NOT use for sequential reasoning where step 2 depends ' +
+      'on step 1. Each task gets its own 60s budget.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          maxItems: 5,
+          minItems: 2,
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string', description: 'Short identifier you choose, e.g. "rank-flips" or "whale-moves".' },
+              prompt: {
+                type: 'string',
+                description:
+                  'The specific question for this sub-agent. Be precise — the sub-agent has no ' +
+                  'context beyond this prompt. Include the data source hint if obvious ' +
+                  '(e.g. "use ingester SQL", "use helius_getWalletHistory").',
+              },
+            },
+            required: ['id', 'prompt'],
+          },
+          description: 'Between 2 and 5 independent tasks.',
+        },
+      },
+      required: ['tasks'],
     },
   },
 ];
@@ -422,11 +463,14 @@ const SEARCH_KNOWLEDGE_TOOL: McpToolDef = {
  *  `attachments` is a per-turn collector — render_chart pushes its PNG onto it
  *  so the channel layer can pick it up from the turn result. Other builtins
  *  ignore it. */
+type DispatchHandler = (tasks: Array<{ id: string; prompt: string }>) => Promise<string>;
+
 async function runBuiltinTool(
   toolName: string,
   args: Record<string, unknown>,
   tenant: Tenant,
   attachments: TurnAttachment[],
+  dispatchHandler?: DispatchHandler,
 ): Promise<string> {
   if (toolName === 'get_leaderboard') {
     const offerId = typeof args.recurringOfferId === 'string' ? args.recurringOfferId : '';
@@ -440,6 +484,23 @@ async function runBuiltinTool(
     const query = typeof args.query === 'string' ? args.query : '';
     if (!query) return '[search_knowledge requires a query]';
     return searchKnowledge(tenant.id, query);
+  }
+  if (toolName === 'dispatch_tasks') {
+    if (!dispatchHandler) {
+      return '[dispatch_tasks not wired — runtime did not provide a handler this turn]';
+    }
+    const tasks = Array.isArray(args.tasks) ? (args.tasks as Array<{ id: unknown; prompt: unknown }>) : [];
+    const cleaned = tasks
+      .map((t) => ({
+        id: typeof t.id === 'string' ? t.id : '',
+        prompt: typeof t.prompt === 'string' ? t.prompt : '',
+      }))
+      .filter((t) => t.id && t.prompt)
+      .slice(0, 5);
+    if (cleaned.length < 2) {
+      return '[dispatch_tasks requires 2-5 tasks with id+prompt; ' + cleaned.length + ' valid task(s) received]';
+    }
+    return dispatchHandler(cleaned);
   }
   if (toolName === 'render_card') {
     // ONE card per turn — second call returns a hard rejection telling the
@@ -689,6 +750,18 @@ export async function runTenantTurn(
       RENDER_CARD_TOOL,
       ...(hasKnowledge ? [SEARCH_KNOWLEDGE_TOOL] : []),
     ].filter((t) => isAllowed(t.serverName, t.toolName));
+
+    // Children of dispatch_tasks get the same tool schema EXCEPT render_card
+    // (only the parent renders the final card) and dispatch_tasks itself (no
+    // recursive fanout). Sessions are shared by closure so children pay zero
+    // spawn cost.
+    const childTools = exposedTools.filter(
+      (t) => t.toolName !== 'render_card' && t.toolName !== 'dispatch_tasks',
+    );
+    const childToolsParam: ChatCompletionTool[] = childTools.map((t) => ({
+      type: 'function',
+      function: { name: t.exposedName, description: t.description, parameters: t.inputSchema },
+    }));
     const toolsParam: ChatCompletionTool[] | undefined = exposedTools.length > 0
       ? exposedTools.map((t) => ({
           type: 'function',
@@ -704,6 +777,137 @@ export async function runTenantTurn(
     let tokensIn = 0;
     let tokensOut = 0;
     let finalText: string | null = null;
+
+    // Dispatch handler for the `dispatch_tasks` builtin. Runs 2-5 child agents
+    // in parallel using closure-captured sessions (zero MCP spawn cost). Each
+    // child gets its own fresh context, a 60s budget, and 8 max iterations.
+    // Child output goes back to the parent serialized as JSON.
+    const dispatchHandler: DispatchHandler = async (tasks) => {
+      const t0 = Date.now();
+      console.log(`[dispatch] tenant=${tenant.slug} fan-out=${tasks.length}`);
+      const results = await Promise.all(
+        tasks.map(async (task) => {
+          const childDeadline = Date.now() + 60_000;
+          const childToolsUsed: string[] = [];
+          const childMessages: ChatCompletionMessageParam[] = [
+            {
+              role: 'system',
+              content:
+                `You are a sub-agent dispatched by ${tenant.display_name}'s primary assistant ` +
+                'to answer ONE specific question. Use your tools to gather data, then return a ' +
+                'concise (≤120 word) finding. Plain text only — no markdown tables, no card ' +
+                'rendering (the parent handles synthesis). Focus on the specific task; do not ' +
+                'expand scope.',
+            },
+            { role: 'user', content: task.prompt },
+          ];
+          let childFinal: string | null = null;
+          let childStatus: 'ok' | 'failed' | 'timeout' = 'ok';
+          try {
+            for (let iter = 0; iter < 8; iter++) {
+              if (Date.now() > childDeadline) {
+                childStatus = 'timeout';
+                childFinal = 'Sub-agent budget exceeded — partial work discarded.';
+                break;
+              }
+              const completion = await callWithTimeout(
+                client.chat.completions.create({
+                  model: tenant.model,
+                  messages: childMessages,
+                  tools: childToolsParam,
+                  max_tokens: 2048,
+                  stream: false,
+                }),
+                DEFAULT_TURN_TIMEOUT_MS,
+                `dispatch child ${task.id} timed out`,
+              );
+              const choice = completion.choices?.[0];
+              if (!choice) {
+                childStatus = 'failed';
+                childFinal = 'Sub-agent: model returned no choice.';
+                break;
+              }
+              const msg = choice.message;
+              const toolCalls = msg.tool_calls;
+              if (toolCalls && toolCalls.length > 0) {
+                childMessages.push({
+                  role: 'assistant',
+                  content: msg.content ?? '',
+                  tool_calls: toolCalls,
+                });
+                const calls = await Promise.all(
+                  toolCalls.map(async (tc) => {
+                    if (tc.type !== 'function') {
+                      return { id: tc.id, content: `[unsupported tool call type]` };
+                    }
+                    const def = childTools.find((t) => t.exposedName === tc.function.name);
+                    if (!def) {
+                      return { id: tc.id, content: `[tool ${tc.function.name} not available to sub-agent]` };
+                    }
+                    let parsedArgs: Record<string, unknown> = {};
+                    try {
+                      parsedArgs = tc.function.arguments
+                        ? (JSON.parse(tc.function.arguments) as Record<string, unknown>)
+                        : {};
+                    } catch (err) {
+                      return { id: tc.id, content: `[invalid args: ${(err as Error).message}]` };
+                    }
+                    childToolsUsed.push(def.toolName);
+                    try {
+                      let body: string;
+                      if (def.serverName === 'builtin') {
+                        body = await callWithTimeout(
+                          // children can't render_card / dispatch_tasks — attachments stays []
+                          runBuiltinTool(def.toolName, parsedArgs, tenant, []),
+                          TOOL_CALL_TIMEOUT_MS,
+                          `child builtin ${def.toolName} timed out`,
+                        );
+                      } else {
+                        const toolSession = sessionForServer(def.serverName);
+                        if (!toolSession) {
+                          return { id: tc.id, content: `[tool ${def.toolName} session unavailable]` };
+                        }
+                        body = await callWithTimeout(
+                          toolSession.call(def.toolName, parsedArgs),
+                          TOOL_CALL_TIMEOUT_MS,
+                          `child ${def.serverName} ${def.toolName} timed out`,
+                        );
+                      }
+                      console.log(
+                        `[dispatch] tenant=${tenant.slug} child=${task.id} tool=${def.toolName} ${argSummary(parsedArgs)}`,
+                      );
+                      return { id: tc.id, content: capToolResponse(body) };
+                    } catch (err) {
+                      const errName = (err as Error).name;
+                      return { id: tc.id, content: `[tool error: ${errName}]` };
+                    }
+                  }),
+                );
+                for (const r of calls) {
+                  childMessages.push({ role: 'tool', tool_call_id: r.id, content: r.content });
+                }
+                continue;
+              }
+              childFinal = typeof msg.content === 'string' ? msg.content : extractText(msg.content);
+              break;
+            }
+            if (childFinal === null) {
+              childStatus = 'failed';
+              childFinal = 'Sub-agent: max iterations reached without final answer.';
+            }
+          } catch (err) {
+            childStatus = 'failed';
+            childFinal = `Sub-agent error: ${(err as Error).name}`;
+          }
+          return { id: task.id, status: childStatus, result: childFinal, tools: childToolsUsed };
+        }),
+      );
+      const dur = Date.now() - t0;
+      console.log(
+        `[dispatch] tenant=${tenant.slug} done in ${dur}ms: ${results.map((r) => `${r.id}=${r.status}`).join(', ')}`,
+      );
+      return JSON.stringify({ results });
+    };
 
     const turnDeadline = turnT0 + TURN_BUDGET_MS;
     let budgetExceeded = false;
@@ -775,7 +979,7 @@ export async function runTenantTurn(
               let body: string;
               if (def.serverName === 'builtin') {
                 body = await callWithTimeout(
-                  runBuiltinTool(def.toolName, args, tenant, attachments),
+                  runBuiltinTool(def.toolName, args, tenant, attachments, dispatchHandler),
                   TOOL_CALL_TIMEOUT_MS,
                   `builtin tool ${def.toolName} timed out`,
                 );
