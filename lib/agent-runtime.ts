@@ -30,8 +30,10 @@ import type {
 } from 'openai/resources/chat/completions';
 import { selectClient } from './hermes';
 import {
+  isHeliusReadonlyTool,
   isIngesterReadonlyTool,
   isTorqueReadonlyTool,
+  openHeliusSession,
   openIngesterSession,
   openTenantTorqueSession,
   type McpToolDef,
@@ -509,6 +511,7 @@ function buildSystemPrompt(
   tenant: Tenant,
   ctx: ConversationContext,
   ingesterEnabled: boolean,
+  heliusEnabled: boolean,
   hasKnowledge: boolean,
 ): string {
   const lines = [
@@ -530,6 +533,21 @@ function buildSystemPrompt(
         `enrich answers about ${tenant.display_name} (e.g. its own token's swap/holder activity). ` +
         'Never produce analyses, comparisons, or reports about unrelated tokens or other Torque ' +
         'projects/customers, and never write to it.',
+    );
+  }
+  if (heliusEnabled) {
+    // Helius gives wallet-level history, holders, and fund-flow graph data
+    // (also NOT project-scoped — it's Solana public data). Useful for whale
+    // movement, holder ranking, fund-source attribution. Same scoping rule:
+    // only enrich THIS customer's answers.
+    lines.push(
+      'You also have READ-ONLY access to the Helius MCP (`helius` tools): wallet history, ' +
+        'token holders, transfer parsing, and fund-flow graph data across Solana. Use it to ' +
+        `enrich answers about ${tenant.display_name} — whale movement, holder rankings, ` +
+        'fund-source attribution, accumulation/exit patterns. Pick the right source for the ' +
+        'question: `get_leaderboard` for incentive standings, `ingester` SQL for historical ' +
+        '$TRUMP-specific time series, `helius` when you need cross-token wallet behavior, ' +
+        'large-transfer detection, or wallet identity / fund flow.',
     );
   }
   if (hasKnowledge) {
@@ -589,19 +607,43 @@ export async function runTenantTurn(
     }
   }
 
+  // Optional enrichment: Helius MCP. Same pattern as ingester — opt-in per
+  // tenant via data_sources `{type:'helius'}` AND a globally configured
+  // `HELIUS_API_KEY`. Failure to open does NOT block the turn (enrichment
+  // only).
+  const heliusKey = process.env.HELIUS_API_KEY;
+  const heliusEnabled =
+    Boolean(heliusKey) &&
+    (tenant.data_sources ?? []).some((d) => d.type === 'helius');
+  let heliusSession: Awaited<ReturnType<typeof openHeliusSession>> | null = null;
+  if (heliusEnabled) {
+    try {
+      heliusSession = await openHeliusSession(heliusKey as string);
+    } catch (err) {
+      const label = err instanceof Error ? err.name : 'UnknownError';
+      console.error(`[agent-runtime] helius session failed for tenant ${tenant.slug}: ${label}; continuing without helius`);
+    }
+  }
+
   // Per-tool gate: each server's tools are checked against ITS OWN read-only
   // allow-list, and routed to ITS OWN session. Fails closed for any unknown
   // server. The model can never reach a write tool on either server.
   const isAllowed = (serverName: string, toolName: string): boolean =>
     serverName === 'ingester'
       ? isIngesterReadonlyTool(toolName)
-      : serverName === 'torque'
-        ? isTorqueReadonlyTool(toolName)
-        : serverName === 'builtin'
-          ? isBuiltinTool(toolName)
-          : false;
+      : serverName === 'helius'
+        ? isHeliusReadonlyTool(toolName)
+        : serverName === 'torque'
+          ? isTorqueReadonlyTool(toolName)
+          : serverName === 'builtin'
+            ? isBuiltinTool(toolName)
+            : false;
   const sessionForServer = (serverName: string) =>
-    serverName === 'ingester' ? ingesterSession : session;
+    serverName === 'ingester'
+      ? ingesterSession
+      : serverName === 'helius'
+        ? heliusSession
+        : session;
 
   const toolsUsed: string[] = [];
   const attachments: TurnAttachment[] = [];
@@ -613,7 +655,13 @@ export async function runTenantTurn(
   );
   try {
     const hasKnowledge = (await countEntries(tenant.id).catch(() => 0)) > 0;
-    const systemPrompt = buildSystemPrompt(tenant, ctx, Boolean(ingesterSession), hasKnowledge);
+    const systemPrompt = buildSystemPrompt(
+      tenant,
+      ctx,
+      Boolean(ingesterSession),
+      Boolean(heliusSession),
+      hasKnowledge,
+    );
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
     ];
@@ -636,6 +684,7 @@ export async function runTenantTurn(
     const exposedTools = [
       ...session.tools,
       ...(ingesterSession ? ingesterSession.tools : []),
+      ...(heliusSession ? heliusSession.tools : []),
       ...BUILTIN_TOOLS,
       RENDER_CARD_TOOL,
       ...(hasKnowledge ? [SEARCH_KNOWLEDGE_TOOL] : []),
@@ -911,6 +960,7 @@ export async function runTenantTurn(
   } finally {
     await session.close();
     if (ingesterSession) await ingesterSession.close();
+    if (heliusSession) await heliusSession.close();
   }
 }
 

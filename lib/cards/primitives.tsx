@@ -27,6 +27,7 @@ import type {
   MiniTable,
   CtaRow,
 } from './types';
+import { CARD_LIMITS } from './types';
 
 const P = TORQUE_TERMINAL;
 export const CARD_WIDTH = 720;
@@ -441,8 +442,15 @@ export function renderKvStrip(p: KvStrip): ReactElement {
           return (
             <Row key={`${idx}-${r.key}`} style={{ padding: '4px 0', fontSize: 12, lineHeight: 1.6 }}>
               <Row style={{ width: 150, color: c.key }}>{r.key.toLowerCase()}</Row>
-              <Row style={{ flex: 1, color: c.val, fontWeight: r.accent && r.accent !== 'default' ? 500 : 400 }}>
-                {truncate(r.val, 60)}
+              <Row
+                style={{
+                  flex: 1,
+                  color: c.val,
+                  fontWeight: r.accent && r.accent !== 'default' ? 500 : 400,
+                  flexWrap: 'wrap',
+                }}
+              >
+                {truncate(r.val, CARD_LIMITS.KV_VAL_MAX)}
               </Row>
             </Row>
           );
@@ -453,7 +461,13 @@ export function renderKvStrip(p: KvStrip): ReactElement {
 }
 
 export function estimateKvStripHeight(p: KvStrip): number {
-  return (p.title ? SECTION_RULE_HEIGHT : 0) + Math.min(p.rows.length, 6) * 30 + 18;
+  // Per-row height grows with val length to accommodate wrap. The val column
+  // is ~530px at fontSize 12 (~80 chars/line) — anything over ~75 chars wraps
+  // to a second visual line, anything over ~150 to a third.
+  const rowH = (val: string): number => (val.length <= 75 ? 30 : val.length <= 150 ? 52 : 74);
+  const visible = p.rows.slice(0, Math.min(p.rows.length, 6));
+  const sum = visible.reduce((s, r) => s + rowH(String(r.val ?? '')), 0);
+  return (p.title ? SECTION_RULE_HEIGHT : 0) + sum + 18;
 }
 
 // --- comparison ---------------------------------------------------------

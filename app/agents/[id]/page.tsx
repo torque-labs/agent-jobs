@@ -22,6 +22,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
   if (!tenant) notFound();
   const t = toPublicTenant(tenant);
   const ingester = (t.data_sources ?? []).some((d) => d.type === 'ingester');
+  const helius = (t.data_sources ?? []).some((d) => d.type === 'helius');
   const usage = await getUsageSummary(t.id).catch(() => ({ turns: 0, tokens_in: 0, tokens_out: 0, cost_usd: 0 }));
   const fmtUsd = (n: number) => (n === 0 ? '$0.00' : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`);
   const routines: RoutineView[] = (await listRoutinesForTenant(t.id).catch(() => [])).map((r) => ({
@@ -105,6 +106,7 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
         soul={t.soul}
         status={t.status}
         ingester={ingester}
+        helius={helius}
       />
 
       <ChannelEnrollment

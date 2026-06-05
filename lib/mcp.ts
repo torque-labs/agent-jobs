@@ -141,6 +141,55 @@ export function isIngesterReadonlyTool(toolName: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Helius MCP — Solana RPC + enhanced data (wallet history, holders, fund-flow
+// graph, transaction parsing). Opt-in per tenant via
+// `data_sources:[{type:'helius'}]` AND a configured `HELIUS_API_KEY` env.
+//
+// Tools chosen for CUSTOMER-FACING analytics (whale movement, holder ranking,
+// wallet identity, transfer parsing). Excluded: anything that writes
+// (transferSol/Token, webhook create/update/delete), anything that signs up
+// or modifies the user's Helius account (agenticSignup, generateKeypair,
+// payRenewal, upgradePlan), anything that subscribes to streams (websocket /
+// laserstream — single-shot request/response only), and Helius admin / docs
+// tools (lookupHeliusDocs, fetchHeliusBlog, etc) that don't belong in a
+// customer agent's schema.
+const HELIUS_MCP_PKG = 'helius-mcp@1.3.0';
+export const HELIUS_READONLY_TOOLS: ReadonlySet<string> = new Set([
+  // Balances + holders
+  'getBalance',
+  'getTokenBalances',
+  'getWalletBalances',
+  'getTokenHolders',
+  'getTokenAccounts',
+  // Wallet history + identity + fund-flow graph (the whale-movement story)
+  'getWalletHistory',
+  'getWalletTransfers',
+  'getTransactionHistory',
+  'getWalletIdentity',
+  'batchWalletIdentity',
+  'getWalletFundedBy',
+  // Transaction parsing
+  'parseTransactions',
+  // DAS / asset reads (NFTs, compressed, by-owner, by-group, by-creator)
+  'getAsset',
+  'getAssetsByOwner',
+  'searchAssets',
+  'getAssetsByGroup',
+  'getSignaturesForAsset',
+  // Raw account / program reads
+  'getAccountInfo',
+  'getProgramAccounts',
+  // Block / network status
+  'getBlock',
+  'getNetworkStatus',
+  'getPriorityFeeEstimate',
+]);
+
+export function isHeliusReadonlyTool(toolName: string): boolean {
+  return HELIUS_READONLY_TOOLS.has(toolName);
+}
+
+// ---------------------------------------------------------------------------
 // `render` MCP server — local script (mcp-servers/render/index.mjs) that bridges
 // jobs to the deployed render service (https://digest.coolify.torque.so). The
 // service computes every report fact deterministically and gates it, so the LLM
@@ -659,6 +708,81 @@ export async function openIngesterSession(databaseUrl: string): Promise<TenantTo
         await transport.close();
       } catch (err) {
         console.error('[mcp] ingester session close error:', err);
+      }
+    },
+  };
+}
+
+/**
+ * Open an ephemeral read-only session against the Helius MCP. Enabled per
+ * tenant via `data_sources:[{type:'helius'}]` AND a configured global
+ * `HELIUS_API_KEY` env. The Helius MCP exposes ~60 tools including transfers
+ * and account-signup actions — we filter aggressively to the data-only
+ * allow-list defined in `HELIUS_READONLY_TOOLS`, enforced again in `.call`
+ * (defense in depth, fail-closed).
+ */
+export async function openHeliusSession(heliusApiKey: string): Promise<TenantTorqueSession> {
+  if (!heliusApiKey) throw new Error('openHeliusSession: HELIUS_API_KEY is required');
+
+  const transport = new StdioClientTransport({
+    command: 'npx',
+    args: ['-y', HELIUS_MCP_PKG],
+    env: {
+      ...getDefaultEnvironment(),
+      HELIUS_API_KEY: heliusApiKey,
+    },
+    stderr: 'inherit',
+  });
+
+  const client = new Client(
+    { name: 'agent-jobs-helius', version: '0.1.0' },
+    { capabilities: {} },
+  );
+
+  let tools: McpToolDef[];
+  try {
+    await client.connect(transport);
+    const listed = await client.listTools();
+    tools = (listed.tools ?? [])
+      .filter((t) => isHeliusReadonlyTool(t.name))
+      .map((t) => ({
+        serverName: 'helius',
+        toolName: t.name,
+        exposedName: makeExposedName('helius', t.name),
+        description: typeof t.description === 'string' ? t.description : '',
+        inputSchema: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} },
+      }));
+  } catch (err) {
+    try {
+      await transport.close();
+    } catch (closeErr) {
+      console.error('[mcp] helius session cleanup after startup failure:', closeErr);
+    }
+    throw err;
+  }
+
+  let closed = false;
+  return {
+    tools,
+    call: async (toolName, args) => {
+      if (closed) throw new Error('helius session already closed');
+      if (!isHeliusReadonlyTool(toolName)) {
+        throw new Error(`tool ${toolName} is not permitted (helius read-only allow-list)`);
+      }
+      const result = await client.callTool(
+        { name: toolName, arguments: args },
+        undefined,
+        { timeout: MCP_INGESTER_TIMEOUT_MS },
+      );
+      return normalizeToolResult(result);
+    },
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      try {
+        await transport.close();
+      } catch (err) {
+        console.error('[mcp] helius session close error:', err);
       }
     },
   };

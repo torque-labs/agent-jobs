@@ -45,36 +45,40 @@ async function patchAgent(id: string, body: unknown): Promise<boolean> {
   return true;
 }
 
-// ---- Edit model / soul / status / ingester ----
+// ---- Edit model / soul / status / data sources ----
 export function AgentControls({
   id,
   model: initModel,
   soul: initSoul,
   status: initStatus,
   ingester: initIngester,
+  helius: initHelius,
 }: {
   id: string;
   model: string;
   soul: string;
   status: Status;
   ingester: boolean;
+  helius: boolean;
 }) {
   const router = useRouter();
   const [model, setModel] = useState(initModel);
   const [soul, setSoul] = useState(initSoul);
   const [status, setStatus] = useState<Status>(initStatus);
   const [ingester, setIngester] = useState(initIngester);
+  const [helius, setHelius] = useState(initHelius);
   const [saving, setSaving] = useState(false);
 
   async function save() {
     setSaving(true);
+    const sources: Array<{ type: string; label: string; value: string }> = [];
+    if (ingester) sources.push({ type: 'ingester', label: 'Torque Ingester', value: 'enabled' });
+    if (helius) sources.push({ type: 'helius', label: 'Helius', value: 'enabled' });
     const ok = await patchAgent(id, {
       model: model.trim(),
       soul: soul.trim(),
       status,
-      data_sources: ingester
-        ? [{ type: 'ingester', label: 'Torque Ingester', value: 'enabled' }]
-        : [],
+      data_sources: sources,
     });
     setSaving(false);
     if (ok) {
@@ -129,15 +133,27 @@ export function AgentControls({
             disabled={saving}
           />
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={ingester}
-            onChange={(e) => setIngester(e.target.checked)}
-            disabled={saving}
-          />
-          Torque Ingester (raw on-chain swap data, read-only)
-        </label>
+        <div className="flex flex-col gap-2">
+          <Label>Data sources</Label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={ingester}
+              onChange={(e) => setIngester(e.target.checked)}
+              disabled={saving}
+            />
+            Torque Ingester (raw on-chain swap data, read-only)
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={helius}
+              onChange={(e) => setHelius(e.target.checked)}
+              disabled={saving}
+            />
+            Helius (wallet history, holders, fund flow — Solana, read-only)
+          </label>
+        </div>
         <div>
           <Button type="button" onClick={save} disabled={saving}>
             {saving && <Loader2Icon className="animate-spin" data-icon="inline-start" />}
