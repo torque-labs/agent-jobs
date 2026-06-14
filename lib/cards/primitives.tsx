@@ -1,18 +1,25 @@
 /**
  * All 15 primitive section renderers + chrome helpers. Each primitive exports
- * a `render(props): ReactElement` and an `estimateHeight(props): number` pair.
- * Satori needs a fixed canvas height up front, so per-primitive height
- * estimates summed in the orchestrator (cards/render.tsx) is how we pick it.
+ * a `render(props, palette): ReactElement` pair (palette is the active
+ * TorqueTerminal/TorqueLight token bundle). Satori needs a fixed canvas
+ * height up front, so per-primitive `estimate*Height` functions sum to give
+ * render.tsx a number to pass in.
  *
- * Subset rules (recap from cards/types.ts):
+ * Subset rules (recap from types.ts):
  *  - flexbox only (no CSS grid, no pseudo-elements)
  *  - inline styles only
- *  - we shorten the path to "<div style={{flexDirection:'row'…}}>" by using a
- *    small Row/Col helper at the top.
+ *  - we shorten the path to "<div style={{flexDirection:'row'…}}>" via small
+ *    Row/Col helpers at the top.
+ *
+ * Theme handling — every render function takes a `palette: TorqueTerminal`
+ * parameter so the same code emits both dark and light cards. Hardcoded
+ * rgba tints (badge/callout backgrounds, data-row red/green dims, zebra
+ * stripes) are computed via the local `tint()` helper from palette accent
+ * colors, so they stay theme-correct.
  */
 /** @jsxImportSource react */
 import type { ReactElement, CSSProperties } from 'react';
-import { TORQUE_TERMINAL } from '../torque-brand';
+import type { TorqueTerminal } from '../torque-brand';
 import type {
   IntroBody,
   DataRows,
@@ -26,14 +33,14 @@ import type {
   Callout,
   MiniTable,
   CtaRow,
+  _InternalNote,
 } from './types';
 import { CARD_LIMITS } from './types';
 
-const P = TORQUE_TERMINAL;
 export const CARD_WIDTH = 720;
 const PAD_X = 22;
 
-// --- tiny layout helpers -------------------------------------------------
+// --- tiny layout + color helpers ---------------------------------------
 
 const Row = ({ style, children }: { style?: CSSProperties; children?: React.ReactNode }) => (
   <div style={{ display: 'flex', flexDirection: 'row', ...style }}>{children}</div>
@@ -53,12 +60,25 @@ function shortAddr(s: string, max = 14): string {
   return `${s.slice(0, keep)}…${s.slice(-keep)}`;
 }
 
+/** Convert a #RRGGBB hex string to an rgba(...) string at the given opacity.
+ *  Used to derive tinted accent backgrounds (badge bg, callout bg, zebra
+ *  stripes) from the active palette so they're theme-correct. */
+function tint(hex: string, opacity: number): string {
+  const h = hex.replace('#', '');
+  if (h.length !== 6) return hex;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
 // --- chrome: status bar (with logo) + footer + section_rule --------------
 
 export function renderStatusBar(
   symbol: string,
   label: string,
   logoDataUrl: string | null,
+  P: TorqueTerminal,
 ): ReactElement {
   const sep = <span style={{ color: P.textTertiary, margin: '0 6px' }}>·</span>;
   return (
@@ -96,7 +116,11 @@ export function renderStatusBar(
 }
 export const STATUS_BAR_HEIGHT = 56;
 
-export function renderFooter(updatedUtc?: string, footerText?: string): ReactElement {
+export function renderFooter(
+  updatedUtc: string | undefined,
+  footerText: string | undefined,
+  P: TorqueTerminal,
+): ReactElement {
   return (
     <Row
       style={{
@@ -109,7 +133,10 @@ export function renderFooter(updatedUtc?: string, footerText?: string): ReactEle
         textTransform: 'uppercase',
       }}
     >
-      <span style={{ color: P.accentGreen, marginRight: 10 }}>✓</span>
+      {/* Plus sign (ASCII) substitutes for a checkmark — Geist Mono ships
+          no ✓ glyph, so it renders as a tofu box. The green color carries
+          the "ok / verified" semantic. */}
+      <span style={{ color: P.accentGreen, marginRight: 10, fontWeight: 700 }}>+</span>
       <span>{footerText ?? 'data current'}</span>
       {updatedUtc ? (
         <>
@@ -124,7 +151,8 @@ export const FOOTER_HEIGHT = 60;
 
 function renderSectionRuleInternal(
   title: string,
-  accent: 'default' | 'warn' | 'info' = 'default',
+  accent: 'default' | 'warn' | 'info',
+  P: TorqueTerminal,
 ): ReactElement {
   const color = accent === 'warn' ? P.accentRed : accent === 'info' ? P.accentBlue : P.accentOrange;
   return (
@@ -158,13 +186,13 @@ const SECTION_RULE_HEIGHT = 44;
 
 // --- intro_body ---------------------------------------------------------
 
-export function renderIntroBody(p: IntroBody): ReactElement {
+export function renderIntroBody(p: IntroBody, P: TorqueTerminal): ReactElement {
   const text = truncate(p.text, 280);
   const muted = p.muted ? truncate(p.muted, 120) : undefined;
   const warnBar = p.emphasis === 'warn';
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title, warnBar ? 'warn' : 'default') : null}
+      {p.title ? renderSectionRuleInternal(p.title, warnBar ? 'warn' : 'default', P) : null}
       <Row
         style={{
           padding: '4px 22px 12px',
@@ -194,7 +222,10 @@ export function estimateIntroBodyHeight(p: IntroBody): number {
 const COL_NAME_W = 160;
 const COL_VALUE_W = 100;
 
-function renderDataHeader(cols?: { name?: string; bar?: string; value?: string }): ReactElement {
+function renderDataHeader(
+  cols: { name?: string; bar?: string; value?: string } | undefined,
+  P: TorqueTerminal,
+): ReactElement {
   const cell = (text: string, align: CSSProperties['justifyContent']): ReactElement => (
     <Row
       style={{
@@ -226,7 +257,12 @@ function renderDataHeader(cols?: { name?: string; bar?: string; value?: string }
   );
 }
 
-function renderDataRow(r: DataRow, hasRank: boolean, hasBar: boolean): ReactElement {
+function renderDataRow(
+  r: DataRow,
+  hasRank: boolean,
+  hasBar: boolean,
+  P: TorqueTerminal,
+): ReactElement {
   const accentColor: Record<NonNullable<DataRow['accent']>, string> = {
     blue: P.accentBlue,
     yellow: P.accentYellow,
@@ -236,8 +272,8 @@ function renderDataRow(r: DataRow, hasRank: boolean, hasBar: boolean): ReactElem
   const accentDim: Record<NonNullable<DataRow['accent']>, string> = {
     blue: P.accentBlueDim,
     yellow: P.accentYellowDim,
-    red: 'rgba(227,123,107,0.18)',
-    green: 'rgba(93,216,155,0.18)',
+    red: tint(P.accentRed, 0.18),
+    green: tint(P.accentGreen, 0.18),
   };
   const fg = r.highlight
     ? P.accentYellow
@@ -311,16 +347,16 @@ function renderDataRow(r: DataRow, hasRank: boolean, hasBar: boolean): ReactElem
   );
 }
 
-export function renderDataRows(p: DataRows): ReactElement {
+export function renderDataRows(p: DataRows, P: TorqueTerminal): ReactElement {
   const rows = p.rows.slice(0, Math.min(p.maxRows ?? 10, 20));
   const hasRank = rows.some((r) => r.rank !== undefined);
   const hasBar = rows.some((r) => r.pct !== undefined);
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title) : null}
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
       <Col style={{ padding: '4px 22px 14px' }}>
-        {renderDataHeader(p.columns)}
-        {rows.map((r) => renderDataRow(r, hasRank, hasBar))}
+        {renderDataHeader(p.columns, P)}
+        {rows.map((r) => renderDataRow(r, hasRank, hasBar, P))}
       </Col>
     </Col>
   );
@@ -333,7 +369,7 @@ export function estimateDataRowsHeight(p: DataRows): number {
 
 // --- big_number ---------------------------------------------------------
 
-export function renderBigNumber(p: BigNumber): ReactElement {
+export function renderBigNumber(p: BigNumber, P: TorqueTerminal): ReactElement {
   const value = truncate(p.value, 14);
   const dir = p.delta?.direction;
   const deltaColor = dir === 'up' ? P.accentGreen : dir === 'down' ? P.accentRed : P.textSecondary;
@@ -341,15 +377,15 @@ export function renderBigNumber(p: BigNumber): ReactElement {
   // Shrink value font when long.
   const valueFont = value.length > 8 ? 56 : value.length > 5 ? 72 : 88;
   const capPct = p.cap ? Math.max(0, Math.min(100, p.cap.pct)) : 0;
-  // Color the meter by saturation: green well below cap, yellow approaching,
+  // Color the meter by saturation: blue well below cap, yellow approaching,
   // red at/over cap.
   const capColor =
     capPct >= 95 ? P.accentRed : capPct >= 75 ? P.accentYellow : P.accentBlue;
   const capDim =
-    capPct >= 95 ? 'rgba(227,123,107,0.18)' : capPct >= 75 ? P.accentYellowDim : P.accentBlueDim;
+    capPct >= 95 ? tint(P.accentRed, 0.18) : capPct >= 75 ? P.accentYellowDim : P.accentBlueDim;
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title) : null}
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
       <Col style={{ padding: '12px 22px 18px' }}>
         <Row style={{ alignItems: 'baseline' }}>
           <span style={{ color: P.textPrimary, fontSize: valueFont, fontWeight: 700, lineHeight: 1 }}>
@@ -418,7 +454,10 @@ export function estimateBigNumberHeight(p: BigNumber): number {
 
 // --- kv_strip -----------------------------------------------------------
 
-function kvAccentColors(accent: NonNullable<KvStrip['rows'][0]['accent']>): { key: string; val: string } {
+function kvAccentColors(
+  accent: NonNullable<KvStrip['rows'][0]['accent']>,
+  P: TorqueTerminal,
+): { key: string; val: string } {
   switch (accent) {
     case 'alert':
       return { key: P.accentRed, val: P.accentRed };
@@ -431,14 +470,14 @@ function kvAccentColors(accent: NonNullable<KvStrip['rows'][0]['accent']>): { ke
   }
 }
 
-export function renderKvStrip(p: KvStrip): ReactElement {
+export function renderKvStrip(p: KvStrip, P: TorqueTerminal): ReactElement {
   const rows = p.rows.slice(0, 6);
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title) : null}
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
       <Col style={{ padding: '4px 22px 14px' }}>
         {rows.map((r, idx) => {
-          const c = kvAccentColors(r.accent ?? 'default');
+          const c = kvAccentColors(r.accent ?? 'default', P);
           return (
             <Row key={`${idx}-${r.key}`} style={{ padding: '4px 0', fontSize: 12, lineHeight: 1.6 }}>
               <Row style={{ width: 150, color: c.key }}>{r.key.toLowerCase()}</Row>
@@ -472,7 +511,7 @@ export function estimateKvStripHeight(p: KvStrip): number {
 
 // --- comparison ---------------------------------------------------------
 
-export function renderComparison(p: Comparison): ReactElement {
+export function renderComparison(p: Comparison, P: TorqueTerminal): ReactElement {
   const winnerColor = (side: 'left' | 'right') =>
     p.winner === side ? P.accentGreen : P.textPrimary;
   const renderSide = (side: 'left' | 'right') => {
@@ -498,7 +537,7 @@ export function renderComparison(p: Comparison): ReactElement {
   };
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title) : null}
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
       <Row style={{ alignItems: 'stretch' }}>
         {renderSide('left')}
         <Col style={{ width: 1, backgroundColor: P.border, margin: '12px 0' }} />
@@ -547,7 +586,7 @@ function buildSparklinePath(
   return { path, refY };
 }
 
-export function renderSparkline(p: Sparkline): ReactElement {
+export function renderSparkline(p: Sparkline, P: TorqueTerminal): ReactElement {
   const series = p.series.filter((v) => Number.isFinite(v));
   const w = CARD_WIDTH - PAD_X * 2;
   const h = 76;
@@ -572,7 +611,7 @@ export function renderSparkline(p: Sparkline): ReactElement {
   const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title) : null}
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
       <Col style={{ padding: '6px 22px 12px' }}>
         {/* eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text */}
         <img src={dataUrl} width={w} height={h} />
@@ -612,7 +651,7 @@ export function estimateSparklineHeight(p: Sparkline): number {
 
 // --- histogram (vertical bars) -----------------------------------------
 
-export function renderHistogram(p: Histogram): ReactElement {
+export function renderHistogram(p: Histogram, P: TorqueTerminal): ReactElement {
   const bins = p.bins.slice(0, 16);
   const max = bins.length === 0 ? 1 : Math.max(...bins.map((b) => Math.max(0, b.value)));
   const orientation = p.orientation ?? 'vertical';
@@ -620,7 +659,7 @@ export function renderHistogram(p: Histogram): ReactElement {
   if (orientation === 'horizontal') {
     return (
       <Col>
-        {p.title ? renderSectionRuleInternal(p.title) : null}
+        {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
         <Col style={{ padding: '4px 22px 14px' }}>
           {bins.map((b, idx) => {
             const pct = max === 0 ? 0 : Math.max(0, b.value) / max * 100;
@@ -671,7 +710,7 @@ export function renderHistogram(p: Histogram): ReactElement {
   const barW = Math.max(8, (totalW - (bins.length - 1) * barGap) / Math.max(bins.length, 1));
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title) : null}
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
       <Col style={{ padding: '6px 22px 4px' }}>
         <Row style={{ alignItems: 'flex-end', height: chartH }}>
           {bins.map((b, idx) => {
@@ -723,31 +762,32 @@ export function estimateHistogramHeight(p: Histogram): number {
   return (p.title ? SECTION_RULE_HEIGHT : 0) + 6 + 160 + 24 + 4;
 }
 
-// --- ascii_chart --------------------------------------------------------
-
 // --- badge_row ----------------------------------------------------------
 
-function badgeToneColors(tone: NonNullable<BadgeRow['badges'][0]['tone']>): { bg: string; fg: string; border: string } {
+function badgeToneColors(
+  tone: NonNullable<BadgeRow['badges'][0]['tone']>,
+  P: TorqueTerminal,
+): { bg: string; fg: string; border: string } {
   switch (tone) {
     case 'ok':
-      return { bg: 'rgba(93,216,155,0.15)', fg: P.accentGreen, border: 'rgba(93,216,155,0.45)' };
+      return { bg: tint(P.accentGreen, 0.15), fg: P.accentGreen, border: tint(P.accentGreen, 0.45) };
     case 'warn':
-      return { bg: 'rgba(232,169,74,0.15)', fg: P.accentOrange, border: 'rgba(232,169,74,0.45)' };
+      return { bg: tint(P.accentOrange, 0.15), fg: P.accentOrange, border: tint(P.accentOrange, 0.45) };
     case 'alert':
-      return { bg: 'rgba(227,123,107,0.15)', fg: P.accentRed, border: 'rgba(227,123,107,0.45)' };
+      return { bg: tint(P.accentRed, 0.15), fg: P.accentRed, border: tint(P.accentRed, 0.45) };
     case 'info':
-      return { bg: 'rgba(123,199,252,0.15)', fg: P.accentBlue, border: 'rgba(123,199,252,0.45)' };
+      return { bg: tint(P.accentBlue, 0.15), fg: P.accentBlue, border: tint(P.accentBlue, 0.45) };
     default:
-      return { bg: 'rgba(255,255,255,0.05)', fg: P.textSecondary, border: 'rgba(255,255,255,0.18)' };
+      return { bg: tint(P.textPrimary, 0.05), fg: P.textSecondary, border: tint(P.textPrimary, 0.18) };
   }
 }
 
-export function renderBadgeRow(p: BadgeRow): ReactElement {
+export function renderBadgeRow(p: BadgeRow, P: TorqueTerminal): ReactElement {
   const badges = p.badges.slice(0, 4);
   return (
     <Row style={{ padding: '6px 22px 14px', flexWrap: 'wrap' }}>
       {badges.map((b, idx) => {
-        const c = badgeToneColors(b.tone ?? 'neutral');
+        const c = badgeToneColors(b.tone ?? 'neutral', P);
         return (
           <Row
             key={`${idx}-${b.label}`}
@@ -785,30 +825,35 @@ export function estimateBadgeRowHeight(_p: BadgeRow): number {
 
 // --- callout ------------------------------------------------------------
 
-function calloutToneColors(tone: NonNullable<Callout['tone']>): { bg: string; border: string; fg: string } {
+function calloutToneColors(
+  tone: NonNullable<Callout['tone']>,
+  P: TorqueTerminal,
+): { bg: string; border: string; fg: string } {
   switch (tone) {
     case 'warn':
-      return { bg: 'rgba(232,169,74,0.10)', border: P.accentOrange, fg: P.textPrimary };
+      return { bg: tint(P.accentOrange, 0.10), border: P.accentOrange, fg: P.textPrimary };
     case 'alert':
-      return { bg: 'rgba(227,123,107,0.10)', border: P.accentRed, fg: P.textPrimary };
+      return { bg: tint(P.accentRed, 0.10), border: P.accentRed, fg: P.textPrimary };
     case 'ok':
-      return { bg: 'rgba(93,216,155,0.10)', border: P.accentGreen, fg: P.textPrimary };
+      return { bg: tint(P.accentGreen, 0.10), border: P.accentGreen, fg: P.textPrimary };
     default:
-      return { bg: 'rgba(123,199,252,0.10)', border: P.accentBlue, fg: P.textPrimary };
+      return { bg: tint(P.accentBlue, 0.10), border: P.accentBlue, fg: P.textPrimary };
   }
 }
 
-// Geist Mono doesn't ship glyphs for unicode symbols like ⓘ / ⚠ — they render
-// as missing-glyph boxes. Stick to ASCII so every icon paints reliably.
+// Geist Mono doesn't ship glyphs for most unicode symbols (ⓘ, ⚠, ✓, etc.)
+// — they render as missing-glyph tofu boxes. Stick to ASCII so every icon
+// paints reliably. The tone color (border + tinted bg) carries the
+// "info/warn/alert/ok" semantic; the glyph is just a visual anchor.
 const CALLOUT_ICONS: Record<NonNullable<Callout['icon']>, string> = {
   info: 'i',
   warn: '!',
-  check: '✓',
+  check: '+',
   alert: '!',
 };
 
-export function renderCallout(p: Callout): ReactElement {
-  const c = calloutToneColors(p.tone ?? 'info');
+export function renderCallout(p: Callout, P: TorqueTerminal): ReactElement {
+  const c = calloutToneColors(p.tone ?? 'info', P);
   const icon = p.icon ? CALLOUT_ICONS[p.icon] : null;
   return (
     <Col style={{ padding: '6px 22px 14px' }}>
@@ -840,16 +885,17 @@ export function estimateCalloutHeight(_p: Callout): number {
 // tabular and data_rows (single bar + value column) doesn't fit. Example:
 // referral table with Referrer / Referee / Balance / Score.
 
-export function renderMiniTable(p: MiniTable): ReactElement {
+export function renderMiniTable(p: MiniTable, P: TorqueTerminal): ReactElement {
   const cols = (p.columns ?? []).slice(0, 4);
   const maxRows = Math.min(p.maxRows ?? 8, 12);
   const rows = (p.rows ?? []).slice(0, maxRows);
   const totalW = CARD_WIDTH - PAD_X * 2;
   const colW = cols.length > 0 ? totalW / cols.length : totalW;
   const cellMax = 24;
+  const zebra = tint(P.textPrimary, 0.015);
   return (
     <Col>
-      {p.title ? renderSectionRuleInternal(p.title) : null}
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
       <Col style={{ padding: '4px 22px 14px' }}>
         {/* Header row */}
         <Row
@@ -883,7 +929,7 @@ export function renderMiniTable(p: MiniTable): ReactElement {
               padding: '6px 0',
               fontSize: 12,
               // Subtle zebra striping for legibility on dense tables.
-              backgroundColor: idx % 2 === 1 ? 'rgba(255,255,255,0.015)' : 'transparent',
+              backgroundColor: idx % 2 === 1 ? zebra : 'transparent',
             }}
           >
             {cols.map((c) => (
@@ -912,7 +958,7 @@ export function estimateMiniTableHeight(p: MiniTable): number {
 
 // --- cta_row ------------------------------------------------------------
 
-export function renderCtaRow(p: CtaRow): ReactElement {
+export function renderCtaRow(p: CtaRow, P: TorqueTerminal): ReactElement {
   const buttons = p.buttons.slice(0, 2);
   return (
     <Row style={{ padding: '4px 22px 22px' }}>
@@ -927,7 +973,7 @@ export function renderCtaRow(p: CtaRow): ReactElement {
               marginRight: idx === buttons.length - 1 ? 0 : 10,
               padding: 14,
               backgroundColor: primary ? P.terminalBgSoft : 'transparent',
-              border: `1px solid ${primary ? 'rgba(255,255,255,0.18)' : P.border}`,
+              border: `1px solid ${primary ? tint(P.textPrimary, 0.18) : P.border}`,
               borderRadius: 4,
               alignItems: 'center',
               justifyContent: 'center',
@@ -951,15 +997,11 @@ export function estimateCtaRowHeight(_p: CtaRow): number {
   return 78;
 }
 
-// --- spacer (REMOVED) — primitives carry their own padding. ------------
-
 // --- _internal_note (NOT agent-facing) ----------------------------------
 // Internal-only marker primitive used by render.tsx's height-cap truncation
 // path. Not in the tool schema, not in the validator's user-facing types.
 
-import type { _InternalNote } from './types';
-
-export function renderInternalNote(p: _InternalNote): ReactElement {
+export function renderInternalNote(p: _InternalNote, P: TorqueTerminal): ReactElement {
   return (
     <Row style={{ padding: '4px 22px 12px' }}>
       <span style={{ color: P.textTertiary, fontSize: 11, letterSpacing: 0.4 }}>

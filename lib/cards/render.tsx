@@ -12,7 +12,7 @@
  */
 /** @jsxImportSource react */
 import type { ReactElement } from 'react';
-import { TORQUE_TERMINAL } from '../torque-brand';
+import { TORQUE_TERMINAL, TORQUE_LIGHT, type TorqueTerminal } from '../torque-brand';
 import type { CardRenderResult, CardSpec, Section } from './types';
 import { CARD_LIMITS } from './types';
 import { validateCardSpec } from './validate';
@@ -48,35 +48,38 @@ import {
   estimateInternalNoteHeight,
 } from './primitives';
 
-const P = TORQUE_TERMINAL;
+function pickPalette(theme: 'dark' | 'light' | undefined): TorqueTerminal {
+  // Light is the default brand look; dark only when explicitly requested.
+  return theme === 'dark' ? TORQUE_TERMINAL : TORQUE_LIGHT;
+}
 
 // Dispatch tables — adding a new primitive: add an entry here.
-function dispatchSection(s: Section): ReactElement {
+function dispatchSection(s: Section, P: TorqueTerminal): ReactElement {
   switch (s.type) {
     case 'intro_body':
-      return renderIntroBody(s);
+      return renderIntroBody(s, P);
     case 'data_rows':
-      return renderDataRows(s);
+      return renderDataRows(s, P);
     case 'big_number':
-      return renderBigNumber(s);
+      return renderBigNumber(s, P);
     case 'kv_strip':
-      return renderKvStrip(s);
+      return renderKvStrip(s, P);
     case 'comparison':
-      return renderComparison(s);
+      return renderComparison(s, P);
     case 'sparkline':
-      return renderSparkline(s);
+      return renderSparkline(s, P);
     case 'histogram':
-      return renderHistogram(s);
+      return renderHistogram(s, P);
     case 'badge_row':
-      return renderBadgeRow(s);
+      return renderBadgeRow(s, P);
     case 'callout':
-      return renderCallout(s);
+      return renderCallout(s, P);
     case 'mini_table':
-      return renderMiniTable(s);
+      return renderMiniTable(s, P);
     case 'cta_row':
-      return renderCtaRow(s);
+      return renderCtaRow(s, P);
     case '_internal_note':
-      return renderInternalNote(s);
+      return renderInternalNote(s, P);
   }
 }
 
@@ -168,24 +171,28 @@ async function buildRenderer(): Promise<(spec: CardSpec) => Promise<Buffer>> {
     { name: 'Geist Mono', data: bold, weight: 700 as const, style: 'normal' as const },
   ];
 
-  // Load + recolor the Torque hexagon for the status bar logo. Best-effort.
+  // Load the Torque hexagon SVG once; recolor per-spec to the active palette's
+  // textPrimary (the native fill is #010101) so it contrasts in both themes.
   const logoPath = path.join(cwd, 'public/logos/torque-symbol.svg');
-  let logoDataUrl: string | null = null;
+  let rawLogoSvg: string | null = null;
   try {
-    const raw = await fs.readFile(logoPath, 'utf-8');
-    const recolored = raw.replace(/#010101/gi, P.textPrimary);
-    logoDataUrl = `data:image/svg+xml;base64,${Buffer.from(recolored).toString('base64')}`;
+    rawLogoSvg = await fs.readFile(logoPath, 'utf-8');
   } catch (err) {
     console.warn('[render-card] torque-symbol.svg not found; rendering without logo:', err);
   }
 
   return async (spec: CardSpec): Promise<Buffer> => {
+    const P = pickPalette(spec.theme);
     const totalHeight =
       STATUS_BAR_HEIGHT +
       spec.sections.reduce((sum, s) => sum + estimateSectionHeight(s), 0) +
       FOOTER_HEIGHT +
       20;
-    const showLogo = spec.logo !== false && logoDataUrl !== null;
+    const showLogo = spec.logo !== false && rawLogoSvg !== null;
+    const logoDataUrl =
+      showLogo && rawLogoSvg
+        ? `data:image/svg+xml;base64,${Buffer.from(rawLogoSvg.replace(/#010101/gi, P.textPrimary)).toString('base64')}`
+        : null;
     const tree = (
       <div
         style={{
@@ -198,19 +205,22 @@ async function buildRenderer(): Promise<(spec: CardSpec) => Promise<Buffer>> {
           fontSize: 13,
         }}
       >
-        {renderStatusBar(spec.symbol, spec.label, showLogo ? logoDataUrl : null)}
+        {renderStatusBar(spec.symbol, spec.label, logoDataUrl, P)}
         {spec.sections.map((s, i) => (
           <div key={i} style={{ display: 'flex', flexDirection: 'column' }}>
-            {dispatchSection(s)}
+            {dispatchSection(s, P)}
           </div>
         ))}
-        {renderFooter(spec.updatedUtc, spec.footerText)}
+        {renderFooter(spec.updatedUtc, spec.footerText, P)}
       </div>
     );
     const svg = await satori(tree, { width: CARD_WIDTH, height: totalHeight, fonts });
+    // Render at 2× pixel density so the card stays crisp on retina/HDPI
+    // displays — twice as wide in pixels, same physical size, sharp text/bars.
     const resvg = new Resvg(svg, {
       background: P.terminalBg,
       font: { defaultFontFamily: 'Geist Mono' },
+      fitTo: { mode: 'width', value: CARD_WIDTH * 2 },
     });
     return resvg.render().asPng();
   };

@@ -37,7 +37,17 @@ Hard rules:
   Torque projects, general questions, coding, web lookups, or system tasks — briefly
   refuse and redirect: "I can only help with the {{name}} incentive program."
 - Be concise, accurate, and friendly. Never reveal credentials, tokens, project IDs,
-  or internal configuration.`;
+  or internal configuration.
+Visual style — render, don't just talk:
+- Any answer built on numbers (a ranking, a volume figure, one hero metric, a trend,
+  a comparison, a breakdown) → call render_card. A bare number in text is a missed
+  card. Text-only replies are for greetings, refusals, and one-line yes/no answers.
+- Always open your reply with the single headline the card proves ("surfer leads at
+  $8.9m — 2.4× rank 2"), then let the card carry the detail. Never send a card silently.
+- One card per turn — multiple shapes go in multiple sections, not multiple calls.
+  Lowercase terminal labels. Plain English only (never name a statistic). Never write
+  a Markdown table — use a mini_table section.
+- Cards render in the Torque light theme by default; just compose good sections.`;
 
 export const AGENT_TEMPLATES: AgentTemplate[] = [
   {

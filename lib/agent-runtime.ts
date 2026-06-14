@@ -277,6 +277,14 @@ const RENDER_CARD_TOOL: McpToolDef = {
       logo: { type: 'boolean', description: 'Default true; pass false to hide the Torque hex glyph.' },
       updatedUtc: { type: 'string', description: 'Pre-formatted timestamp, e.g. "14:32:08 utc".' },
       footerText: { type: 'string', description: 'Override the footer left text (default "data current").' },
+      theme: {
+        type: 'string',
+        enum: ['light', 'dark'],
+        description:
+          'Visual theme. "light" (default) = Torque brand light palette — white bg, ' +
+          'deep-blue (#0008FF) highlights, dark ink. "dark" = terminal aesthetic on ' +
+          'near-black bg. Omit for the default light look.',
+      },
       sections: {
         type: 'array',
         description: 'Ordered body sections (max 8). Each item is a typed primitive — see schema variants.',

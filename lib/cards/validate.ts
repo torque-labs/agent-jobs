@@ -86,6 +86,7 @@ export function validateCardSpec(raw: CardSpec): ValidationResult {
     logo: raw.logo !== false,
     updatedUtc: typeof raw.updatedUtc === 'string' ? raw.updatedUtc : undefined,
     footerText: typeof raw.footerText === 'string' ? raw.footerText : undefined,
+    theme: raw.theme === 'dark' ? 'dark' : 'light',
     sections: out,
   };
 
@@ -140,21 +141,36 @@ function validateSection(s: Section, warnings: string[]): Section | null {
       return { ...s, rows: capped };
     }
     case 'big_number': {
-      if (typeof s.value !== 'string' || s.value.length === 0) {
-        warnings.push('big_number dropped — value required.');
+      // Auto-coerce numeric values to strings. LLMs frequently pass `42`
+      // instead of `"42"` for big_number.value, and the strict-string check
+      // silently dropped the whole section. Accepting either is harmless
+      // since we always render it as text.
+      const rawValue = (s as { value?: unknown }).value;
+      let value: string;
+      if (typeof rawValue === 'string') {
+        value = rawValue;
+      } else if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+        value = String(rawValue);
+      } else {
+        warnings.push('big_number dropped — value required (string or finite number).');
         return null;
       }
+      if (value.length === 0) {
+        warnings.push('big_number dropped — value must be non-empty.');
+        return null;
+      }
+      const coerced = { ...s, value };
       // Clamp/drop cap meter if malformed.
-      if (s.cap) {
-        if (typeof s.cap.pct !== 'number' || !Number.isFinite(s.cap.pct)) {
+      if (coerced.cap) {
+        if (typeof coerced.cap.pct !== 'number' || !Number.isFinite(coerced.cap.pct)) {
           warnings.push('big_number.cap dropped — pct must be a finite number.');
-          const { cap: _drop, ...rest } = s;
+          const { cap: _drop, ...rest } = coerced;
           return rest;
         }
-        const pct = Math.max(0, Math.min(100, s.cap.pct));
-        return { ...s, cap: { ...s.cap, pct } };
+        const pct = Math.max(0, Math.min(100, coerced.cap.pct));
+        return { ...coerced, cap: { ...coerced.cap, pct } };
       }
-      return s;
+      return coerced;
     }
     case 'kv_strip': {
       if (!Array.isArray(s.rows) || s.rows.length === 0) {

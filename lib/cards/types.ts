@@ -25,6 +25,9 @@ export type CardSpec = {
   updatedUtc?: string;
   /** Optional overrides for the footer left-side text (default: "data current"). */
   footerText?: string;
+  /** Visual theme. "light" = Torque brand light palette on white bg (default).
+   *  "dark" = terminal aesthetic on near-black bg. */
+  theme?: 'dark' | 'light';
   /** Body sections in render order. Max 8 enforced server-side. */
   sections: Section[];
 };
