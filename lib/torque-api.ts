@@ -15,6 +15,7 @@
 const TORQUE_SERVER_BASE = 'https://server.torque.so';
 
 type LeaderboardRow = {
+  // Holdings-leaderboard schema ($TRUMP-style).
   owner?: string;
   username?: string;
   days_held?: number;
@@ -23,11 +24,25 @@ type LeaderboardRow = {
   direct_score?: number;
   score?: number;
   metricValue?: number;
+  // Volume / custom eval-SQL schema. The eval SQL aliases vary per incentive
+  // (e.g. SPCX: SELECT "feePayer" AS address, SUM("usdAmount") AS value), so we
+  // read the wallet + metric generically rather than assuming one shape.
+  address?: string;
+  feePayer?: string;
+  wallet?: string;
+  value?: number | string;
 };
 
-function shortAddr(a?: string): string {
-  if (!a || a.length < 12) return a || '—';
-  return `${a.slice(0, 4)}…${a.slice(-4)}`;
+// Pull the wallet + metric from a row regardless of which columns the
+// incentive's eval SQL aliased. Returns the FULL address (not truncated) so
+// downstream funder / identity lookups can act on it.
+function rowWallet(r: LeaderboardRow): string | undefined {
+  return r.owner || r.address || r.feePayer || r.wallet || undefined;
+}
+function rowMetric(r: LeaderboardRow): number | undefined {
+  const v =
+    r.direct_score ?? r.score ?? r.metricValue ?? (typeof r.value === 'string' ? Number(r.value) : r.value);
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 function fmtNum(n?: number): string {
   if (n == null || !Number.isFinite(n)) return '—';
@@ -71,16 +86,16 @@ export async function fetchLeaderboard(
   const raw = Array.isArray(json.data.results) ? json.data.results : [];
   const rows = raw
     .map((r) => (r.row ?? r) as LeaderboardRow)
-    .filter((r) => r && (r.owner || r.username))
+    .filter((r) => r && rowWallet(r) !== undefined)
     .slice(0, n);
   if (rows.length === 0) {
     return 'No leaderboard entries yet for this campaign (the current epoch may not have results yet).';
   }
 
   const lines = rows.map((r, i) => {
-    const who = r.username ? `${r.username} (${shortAddr(r.owner)})` : shortAddr(r.owner);
-    const score = r.direct_score ?? r.score ?? r.metricValue;
-    const parts = [`score ${fmtNum(score)}`];
+    const wallet = rowWallet(r) ?? '—';
+    const who = r.username ? `${r.username} (${wallet})` : wallet;
+    const parts = [fmtNum(rowMetric(r))];
     if (r.days_held != null) parts.push(`${fmtNum(r.days_held)}d held`);
     if (r.latest_balance != null) parts.push(`bal ${fmtNum(r.latest_balance)}`);
     return `${i + 1}. ${who} — ${parts.join(', ')}`;
