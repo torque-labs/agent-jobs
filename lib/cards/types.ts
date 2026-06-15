@@ -25,8 +25,8 @@ export type CardSpec = {
   updatedUtc?: string;
   /** Optional overrides for the footer left-side text (default: "data current"). */
   footerText?: string;
-  /** Visual theme. "light" = Torque brand light palette on white bg (default).
-   *  "dark" = terminal aesthetic on near-black bg. */
+  /** Visual theme. "dark" = terminal aesthetic on near-black bg (default).
+   *  "light" = Torque brand light palette on white bg. */
   theme?: 'dark' | 'light';
   /** Body sections in render order. Max 8 enforced server-side. */
   sections: Section[];
@@ -44,6 +44,8 @@ export type Section =
   | Comparison
   | Sparkline
   | Histogram
+  | GroupedBars
+  | RangeBars
   | BadgeRow
   | Callout
   | MiniTable
@@ -143,6 +145,52 @@ export type Histogram = {
   orientation?: 'vertical' | 'horizontal';
 };
 
+export type GroupedBarSeries = {
+  /** Legend name for this series. */
+  name: string;
+  /** One bar value per category label; short arrays zero-pad, long truncate. */
+  values: number[];
+  /** Palette-mapped bar color. Defaults cycle green -> blue -> yellow. */
+  color?: 'green' | 'blue' | 'red' | 'yellow' | 'slate';
+};
+
+export type GroupedBars = {
+  type: 'grouped_bars';
+  title?: string;
+  /** Category labels along the x-axis (e.g. time slots). Max 12. */
+  labels: string[];
+  /** 1-3 series drawn side-by-side within each category. */
+  series: GroupedBarSeries[];
+  /** Optional dashed vertical divider drawn before category index `at`
+   *  (an event boundary, e.g. a launch). `label` shows as a caption. */
+  marker?: { at: number; label?: string };
+  /** When false, hides the legend (default: shown when >1 series). */
+  legend?: boolean;
+};
+
+export type RangeRow = {
+  /** Row label, e.g. "Gross (DiD)". */
+  label: string;
+  /** Low / point-estimate / high of the range. Drawn as a whisker with a
+   *  dot at `mid`, all rows sharing one axis for visual comparability. */
+  lo: number;
+  mid: number;
+  hi: number;
+  /** Palette-mapped color. Defaults cycle green -> blue -> yellow. */
+  color?: 'green' | 'blue' | 'red' | 'yellow' | 'slate';
+};
+
+export type RangeBars = {
+  type: 'range_bars';
+  title?: string;
+  /** 1-5 whisker rows on a shared horizontal axis. */
+  rows: RangeRow[];
+  /** Value prefix, e.g. "$". */
+  prefix?: string;
+  /** Value suffix, e.g. "M" or "%". */
+  suffix?: string;
+};
+
 export type Badge = {
   label: string;
   value?: string;
@@ -225,6 +273,9 @@ export const CARD_LIMITS = {
   SPARKLINE_MIN: 2,
   SPARKLINE_MAX: 60,
   HISTOGRAM_BINS_MAX: 16,
+  GROUPED_BARS_CATS_MAX: 12,
+  GROUPED_BARS_SERIES_MAX: 3,
+  RANGE_BARS_ROWS_MAX: 5,
   MINI_TABLE_COLS_MAX: 4,
   MINI_TABLE_ROWS_HARD_MAX: 12,
   MINI_TABLE_CELL_MAX: 24,

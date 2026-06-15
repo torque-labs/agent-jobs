@@ -199,7 +199,8 @@ const RENDER_CARD_TOOL: McpToolDef = {
   description:
     'PRIMARY visualization tool. Compose a Torque-branded terminal card by ' +
     'picking section primitives (intro_body, data_rows, big_number, kv_strip, ' +
-    'comparison, sparkline, histogram, mini_table, badge_row, callout, cta_row). ' +
+    'comparison, sparkline, histogram, grouped_bars, range_bars, mini_table, ' +
+    'badge_row, callout, cta_row). ' +
     'Use whenever the answer involves NUMBERS — rankings, trends, hero metrics, ' +
     'comparisons, distributions, multi-column tables, status. The reply attaches ' +
     'the PNG. There is NO other render/chart tool — this is the only visual surface.\n' +

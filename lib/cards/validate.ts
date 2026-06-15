@@ -220,6 +220,66 @@ function validateSection(s: Section, warnings: string[]): Section | null {
       }
       return { ...s, bins: bins.slice(0, CARD_LIMITS.HISTOGRAM_BINS_MAX) };
     }
+    case 'grouped_bars': {
+      // Coerce (don't filter) labels so label<->value index alignment is
+      // preserved — dropping a middle label would shift every later series
+      // value under the wrong category.
+      const labels = (Array.isArray(s.labels) ? s.labels : [])
+        .map((l) => (typeof l === 'string' ? l : l == null ? '' : String(l)))
+        .slice(0, CARD_LIMITS.GROUPED_BARS_CATS_MAX);
+      if (labels.length === 0) {
+        warnings.push('grouped_bars dropped — labels required.');
+        return null;
+      }
+      const series = (Array.isArray(s.series) ? s.series : [])
+        .filter(
+          (ser) =>
+            ser &&
+            typeof ser.name === 'string' &&
+            Array.isArray(ser.values) &&
+            // A finite value must fall inside the visible label window, or the
+            // section renders as all-zero bars.
+            ser.values.slice(0, labels.length).some((v) => Number.isFinite(v)),
+        )
+        .slice(0, CARD_LIMITS.GROUPED_BARS_SERIES_MAX);
+      if (series.length === 0) {
+        warnings.push('grouped_bars dropped — need a series with a finite value in the label window.');
+        return null;
+      }
+      let marker = s.marker;
+      if (marker) {
+        if (typeof marker.at !== 'number' || !Number.isFinite(marker.at)) {
+          warnings.push('grouped_bars.marker dropped — at must be a finite number.');
+          marker = undefined;
+        } else {
+          marker = { at: marker.at, label: typeof marker.label === 'string' ? marker.label : undefined };
+        }
+      }
+      return { ...s, labels, series, marker };
+    }
+    case 'range_bars': {
+      const rows = (Array.isArray(s.rows) ? s.rows : [])
+        .filter(
+          (r) =>
+            r &&
+            typeof r.label === 'string' &&
+            [r.lo, r.mid, r.hi].every((v) => typeof v === 'number' && Number.isFinite(v)),
+        )
+        // Normalize so lo <= hi and mid sits within [lo, hi] — guards against
+        // inverted whiskers, out-of-range dots, and bogus axes.
+        .map((r) => {
+          const lo = Math.min(r.lo, r.hi);
+          const hi = Math.max(r.lo, r.hi);
+          const mid = Math.max(lo, Math.min(hi, r.mid));
+          return { ...r, lo, mid, hi };
+        })
+        .slice(0, CARD_LIMITS.RANGE_BARS_ROWS_MAX);
+      if (rows.length === 0) {
+        warnings.push('range_bars dropped — need rows with label + finite lo/mid/hi.');
+        return null;
+      }
+      return { ...s, rows };
+    }
     case 'badge_row': {
       if (!Array.isArray(s.badges) || s.badges.length === 0) {
         warnings.push('badge_row dropped — badges required.');

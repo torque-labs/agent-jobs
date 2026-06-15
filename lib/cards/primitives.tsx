@@ -29,6 +29,9 @@ import type {
   Comparison,
   Sparkline,
   Histogram,
+  GroupedBars,
+  GroupedBarSeries,
+  RangeBars,
   BadgeRow,
   Callout,
   MiniTable,
@@ -760,6 +763,217 @@ export function estimateHistogramHeight(p: Histogram): number {
     return (p.title ? SECTION_RULE_HEIGHT : 0) + Math.min(p.bins.length, 16) * 28 + 18;
   }
   return (p.title ? SECTION_RULE_HEIGHT : 0) + 6 + 160 + 24 + 4;
+}
+
+// --- grouped_bars (multi-series vertical bars over time) ----------------
+//
+// Drawn as inline SVG (shapes only) embedded via data-URL <img>, same as
+// sparkline — satori can't paint real <svg> children. All text (legend,
+// category labels, marker caption) lives in satori flex outside the image
+// so it uses the bundled font. Use for before/after, treatment-vs-control,
+// or any small time series with 1-3 comparable series and an event marker.
+
+const SERIES_COLOR: Record<NonNullable<GroupedBarSeries['color']>, (P: TorqueTerminal) => string> = {
+  green: (P) => P.accentGreen,
+  blue: (P) => P.accentBlue,
+  red: (P) => P.accentRed,
+  yellow: (P) => P.accentYellow,
+  slate: (P) => P.textSecondary,
+};
+const SERIES_CYCLE: NonNullable<GroupedBarSeries['color']>[] = ['green', 'blue', 'yellow'];
+
+/** Map a (possibly invalid) color key to a palette color, falling back to the
+ *  cycle by index. Guards against bad keys reaching `SERIES_COLOR[...]` as
+ *  `undefined` and crashing on call — the renderer must never throw. */
+function resolveSeriesColor(color: string | undefined, i: number, P: TorqueTerminal): string {
+  const key = (color && color in SERIES_COLOR ? color : SERIES_CYCLE[i % SERIES_CYCLE.length]) as keyof typeof SERIES_COLOR;
+  return SERIES_COLOR[key](P);
+}
+
+export function renderGroupedBars(p: GroupedBars, P: TorqueTerminal): ReactElement {
+  const labels = p.labels.slice(0, CARD_LIMITS.GROUPED_BARS_CATS_MAX);
+  const n = labels.length;
+  const series = p.series.slice(0, CARD_LIMITS.GROUPED_BARS_SERIES_MAX).map((s, i) => ({
+    name: s.name,
+    color: resolveSeriesColor(s.color, i, P),
+    values: labels.map((_, ci) => {
+      const v = s.values?.[ci];
+      return typeof v === 'number' && Number.isFinite(v) ? Math.max(0, v) : 0;
+    }),
+  }));
+
+  const w = CARD_WIDTH - PAD_X * 2;
+  const chartH = 150;
+  const all = series.flatMap((s) => s.values);
+  const denom = all.length && Math.max(...all) > 0 ? Math.max(...all) : 1;
+  const clusterW = n > 0 ? w / n : w;
+  const innerPad = clusterW * 0.16;
+  const groupW = clusterW - innerPad * 2;
+  const sN = Math.max(series.length, 1);
+  const barGap = sN > 1 ? Math.min(4, groupW * 0.06) : 0;
+  const barW = Math.max(3, (groupW - barGap * (sN - 1)) / sN);
+
+  const rects: string[] = [];
+  series.forEach((s, si) => {
+    s.values.forEach((v, ci) => {
+      const hDraw = Math.max(1, (v / denom) * chartH);
+      const x = ci * clusterW + innerPad + si * (barW + barGap);
+      const y = chartH - hDraw;
+      rects.push(
+        `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${hDraw.toFixed(2)}" fill="${s.color}" rx="1"/>`,
+      );
+    });
+  });
+  const baseline = `<line x1="0" y1="${(chartH - 0.5).toFixed(2)}" x2="${w}" y2="${(chartH - 0.5).toFixed(2)}" stroke="${P.border}" stroke-width="1"/>`;
+  let markerSvg = '';
+  if (p.marker && Number.isFinite(p.marker.at)) {
+    const at = Math.max(0, Math.min(n, p.marker.at));
+    const mx = (at * clusterW).toFixed(2);
+    markerSvg = `<line x1="${mx}" y1="0" x2="${mx}" y2="${chartH}" stroke="${P.accentRed}" stroke-width="1.5" stroke-dasharray="5 4"/>`;
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${chartH}" viewBox="0 0 ${w} ${chartH}">${baseline}${rects.join('')}${markerSvg}</svg>`;
+  const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  const showLegend = p.legend !== false && series.length > 1;
+
+  return (
+    <Col>
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
+      <Col style={{ padding: '6px 22px 12px' }}>
+        {showLegend ? (
+          <Row style={{ marginBottom: 8, flexWrap: 'wrap' }}>
+            {series.map((s, i) => (
+              <Row key={`lg-${i}`} style={{ alignItems: 'center', marginRight: 16 }}>
+                <div style={{ width: 10, height: 10, backgroundColor: s.color, marginRight: 6, display: 'flex' }} />
+                <span style={{ color: P.textSecondary, fontSize: 11 }}>{truncate(s.name, 32)}</span>
+              </Row>
+            ))}
+          </Row>
+        ) : null}
+        {/* eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text */}
+        <img src={dataUrl} width={w} height={chartH} />
+        <Row style={{ marginTop: 6 }}>
+          {labels.map((l, i) => (
+            <Row
+              key={`lab-${i}`}
+              style={{ width: clusterW, justifyContent: 'center', color: P.textTertiary, fontSize: 10, letterSpacing: 0.4 }}
+            >
+              {truncate(l, 10)}
+            </Row>
+          ))}
+        </Row>
+        {p.marker?.label ? (
+          <Row style={{ marginTop: 4 }}>
+            <span style={{ color: P.accentRed, fontSize: 11 }}>{`| ${truncate(p.marker.label, 48)}`}</span>
+          </Row>
+        ) : null}
+      </Col>
+    </Col>
+  );
+}
+
+export function estimateGroupedBarsHeight(p: GroupedBars): number {
+  const showLegend = p.legend !== false && (p.series?.length ?? 0) > 1;
+  let legendH = 0;
+  if (showLegend) {
+    // Legend wraps (flexWrap); approximate per-item width (swatch + margins +
+    // ~7px/char) and divide by the content width to count wrapped rows. The
+    // height-cap truncation relies on this not under-counting.
+    const names = (p.series ?? []).slice(0, CARD_LIMITS.GROUPED_BARS_SERIES_MAX).map((s) => s?.name ?? '');
+    const approxW = names.reduce((a, n) => a + 32 + Math.min(n.length, 32) * 7, 0);
+    const legendRows = Math.max(1, Math.ceil(approxW / (CARD_WIDTH - PAD_X * 2)));
+    legendH = 8 + legendRows * 18;
+  }
+  return (
+    (p.title ? SECTION_RULE_HEIGHT : 0) +
+    6 +
+    legendH +
+    150 +
+    6 + 18 +
+    (p.marker?.label ? 4 + 16 : 0) +
+    12
+  );
+}
+
+// --- range_bars (horizontal whisker rows on a shared axis) --------------
+//
+// One row per estimate; each draws a lo–hi whisker with a dot at the point
+// value. All rows share one horizontal scale so they're visually
+// comparable. Shapes are inline SVG (like grouped_bars); label + value text
+// is satori flex. Use for bounded estimates, confidence ranges, scenario
+// spreads — anything that's "a number with a low/high".
+
+export function renderRangeBars(p: RangeBars, P: TorqueTerminal): ReactElement {
+  const rows = p.rows.slice(0, CARD_LIMITS.RANGE_BARS_ROWS_MAX).map((r, i) => ({
+    label: r.label,
+    lo: Number(r.lo),
+    mid: Number(r.mid),
+    hi: Number(r.hi),
+    color: resolveSeriesColor(r.color, i, P),
+  }));
+  // Shared axis spans the true data extremes (no extra padding) so the end
+  // labels sit exactly at x=0 / x=trackW. A collapsed range (all equal)
+  // expands symmetrically so its dot lands centered, not pinned to the edge.
+  const dataMin = Math.min(...rows.map((r) => r.lo));
+  const dataMax = Math.max(...rows.map((r) => r.hi));
+  let dMin = dataMin;
+  let dMax = dataMax;
+  if (!(dMax > dMin)) {
+    dMin = dataMin - 0.5;
+    dMax = dataMax + 0.5;
+  }
+
+  const labelW = 150;
+  const valueW = 110;
+  const trackW = CARD_WIDTH - PAD_X * 2 - labelW - valueW;
+  const trackH = 30;
+  const xFor = (v: number): number => ((Math.max(dMin, Math.min(dMax, v)) - dMin) / (dMax - dMin)) * trackW;
+  const fmt = (v: number): string => `${p.prefix ?? ''}${v}${p.suffix ?? ''}`;
+
+  return (
+    <Col>
+      {p.title ? renderSectionRuleInternal(p.title, 'default', P) : null}
+      <Col style={{ padding: '6px 22px 14px' }}>
+        {rows.map((r, idx) => {
+          const xlo = xFor(r.lo);
+          const xhi = xFor(r.hi);
+          const xmid = xFor(r.mid);
+          const y = trackH / 2;
+          const svg =
+            `<svg xmlns="http://www.w3.org/2000/svg" width="${trackW}" height="${trackH}" viewBox="0 0 ${trackW} ${trackH}">` +
+            `<line x1="0" y1="${y}" x2="${trackW}" y2="${y}" stroke="${P.border}" stroke-width="1"/>` +
+            `<line x1="${xlo.toFixed(1)}" y1="${y}" x2="${xhi.toFixed(1)}" y2="${y}" stroke="${r.color}" stroke-width="6" stroke-linecap="round" opacity="0.35"/>` +
+            `<line x1="${xlo.toFixed(1)}" y1="${y - 6}" x2="${xlo.toFixed(1)}" y2="${y + 6}" stroke="${r.color}" stroke-width="2"/>` +
+            `<line x1="${xhi.toFixed(1)}" y1="${y - 6}" x2="${xhi.toFixed(1)}" y2="${y + 6}" stroke="${r.color}" stroke-width="2"/>` +
+            `<circle cx="${xmid.toFixed(1)}" cy="${y}" r="5" fill="${r.color}"/></svg>`;
+          const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+          return (
+            <Row key={`rb-${idx}`} style={{ alignItems: 'center', padding: '5px 0' }}>
+              <Row style={{ width: labelW, color: P.textPrimary, fontSize: 12 }}>{truncate(r.label, 22)}</Row>
+              {/* eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text */}
+              <img src={dataUrl} width={trackW} height={trackH} />
+              <Col style={{ width: valueW, alignItems: 'flex-end' }}>
+                <span style={{ color: r.color, fontSize: 15, fontWeight: 700 }}>{fmt(r.mid)}</span>
+                <span style={{ color: P.textTertiary, fontSize: 10 }}>{`${fmt(r.lo)}–${fmt(r.hi)}`}</span>
+              </Col>
+            </Row>
+          );
+        })}
+        <Row style={{ marginTop: 4 }}>
+          <Row style={{ width: labelW }} />
+          <Row style={{ width: trackW, justifyContent: 'space-between' }}>
+            <span style={{ color: P.textTertiary, fontSize: 10 }}>{fmt(dataMin)}</span>
+            <span style={{ color: P.textTertiary, fontSize: 10 }}>{fmt(dataMax)}</span>
+          </Row>
+          <Row style={{ width: valueW }} />
+        </Row>
+      </Col>
+    </Col>
+  );
+}
+
+export function estimateRangeBarsHeight(p: RangeBars): number {
+  const n = Math.min(p.rows?.length ?? 0, CARD_LIMITS.RANGE_BARS_ROWS_MAX);
+  return (p.title ? SECTION_RULE_HEIGHT : 0) + 6 + n * 40 + 4 + 16 + 14;
 }
 
 // --- badge_row ----------------------------------------------------------

@@ -36,6 +36,10 @@ import {
   estimateSparklineHeight,
   renderHistogram,
   estimateHistogramHeight,
+  renderGroupedBars,
+  estimateGroupedBarsHeight,
+  renderRangeBars,
+  estimateRangeBarsHeight,
   renderBadgeRow,
   estimateBadgeRowHeight,
   renderCallout,
@@ -70,6 +74,10 @@ function dispatchSection(s: Section, P: TorqueTerminal): ReactElement {
       return renderSparkline(s, P);
     case 'histogram':
       return renderHistogram(s, P);
+    case 'grouped_bars':
+      return renderGroupedBars(s, P);
+    case 'range_bars':
+      return renderRangeBars(s, P);
     case 'badge_row':
       return renderBadgeRow(s, P);
     case 'callout':
@@ -99,6 +107,10 @@ function estimateSectionHeight(s: Section): number {
       return estimateSparklineHeight(s);
     case 'histogram':
       return estimateHistogramHeight(s);
+    case 'grouped_bars':
+      return estimateGroupedBarsHeight(s);
+    case 'range_bars':
+      return estimateRangeBarsHeight(s);
     case 'badge_row':
       return estimateBadgeRowHeight(s);
     case 'callout':
