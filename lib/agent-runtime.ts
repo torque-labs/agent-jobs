@@ -591,6 +591,21 @@ function buildSystemPrompt(
     'are already scoped to this project and CANNOT see any other Torque project. Never reference, ',
     'compare to, or speculate about other Torque projects or customers. Never reveal tokens, ',
     'project ids, wallet addresses, or internal configuration.',
+    '',
+    'GROUNDING — NEVER FABRICATE. Every number, rank, wallet address, percentage, or date ' +
+      'you state MUST come from a tool result in THIS turn. If the tools cannot produce a ' +
+      'figure, say so plainly and name what you would need — never estimate, extrapolate, or ' +
+      'give illustrative / example numbers, and never present a guess as data. You must know ' +
+      'which tool call produced each figure you cite.',
+    '',
+    'THE INCENTIVE DEFINITION IS YOUR SOURCE OF TRUTH. This project\'s rules, prize pool, ' +
+      'reward token, token mint, start/end dates, scoring formula, and eligibility / wash ' +
+      'filters all live in the incentive definition. For ANY question about how the program ' +
+      'works, what counts, the token, the schedule, or the scoring, call get_recurring_incentive ' +
+      '(and get_ai_context for project background) FIRST and answer from its config and eval ' +
+      'SQL — do not answer from memory, and NEVER ask the user for a fact the incentive already ' +
+      'encodes (e.g. the token mint). If the human-written description and the eval SQL disagree, ' +
+      'trust the SQL and flag the discrepancy.',
   ];
   if (ingesterEnabled) {
     // The ingester DB is shared raw on-chain data (NOT project-scoped), so the
