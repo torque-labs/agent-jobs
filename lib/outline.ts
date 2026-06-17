@@ -89,3 +89,91 @@ export function parseOutlineManifest(text: string): OutlineManifest | null {
   }
   return null;
 }
+
+// --- Comment-driven editor support (Outline as an agent "channel") ----------
+
+function outlineBase(): string {
+  const base = process.env.OUTLINE_BASE_URL;
+  if (!base) throw new Error('OUTLINE_BASE_URL not configured');
+  return base.replace(/\/$/, '');
+}
+
+async function outlineApi<T>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+  const key = process.env.OUTLINE_API_KEY;
+  if (!key) throw new Error('OUTLINE_API_KEY not configured');
+  const r = await fetch(`${outlineBase()}/api/${endpoint}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    throw new Error(`Outline ${endpoint} ${r.status}: ${t.slice(0, 500)}`);
+  }
+  return (await r.json()) as T;
+}
+
+export type OutlineDoc = { id: string; title: string; text: string; url: string };
+
+/** Fetch a document's current markdown body + title. */
+export async function getDocument(id: string): Promise<OutlineDoc> {
+  const j = await outlineApi<{ data?: Partial<OutlineDoc> }>('documents.info', { id });
+  const d = j.data;
+  if (!d || typeof d.id !== 'string') throw new Error('documents.info returned no document');
+  return { id: d.id, title: d.title ?? '', text: d.text ?? '', url: d.url ?? '' };
+}
+
+/** Replace a document's markdown body. Creates a new revision — revertable via
+ *  Outline's document history (the undo for apply mode). */
+export async function updateDocument(id: string, text: string): Promise<void> {
+  await outlineApi('documents.update', { id, text });
+}
+
+/** Flatten a ProseMirror comment `data` payload to plain text (inbound parse). */
+export function proseMirrorToText(data: unknown): string {
+  const out: string[] = [];
+  const walk = (n: unknown): void => {
+    if (!n || typeof n !== 'object') return;
+    const node = n as { text?: unknown; content?: unknown };
+    if (typeof node.text === 'string') out.push(node.text);
+    if (Array.isArray(node.content)) node.content.forEach(walk);
+  };
+  walk(data);
+  return out.join('').trim();
+}
+
+/** Wrap plain text as a minimal ProseMirror doc for comments.create (outbound). */
+function textToProseMirror(text: string): unknown {
+  return {
+    type: 'doc',
+    content: text.split('\n').map((line) => ({
+      type: 'paragraph',
+      content: line ? [{ type: 'text', text: line }] : [],
+    })),
+  };
+}
+
+/** Post a comment (optionally threaded under `parentCommentId`). */
+export async function createComment(
+  documentId: string,
+  text: string,
+  parentCommentId?: string,
+): Promise<void> {
+  const body: Record<string, unknown> = { documentId, data: textToProseMirror(text) };
+  if (parentCommentId) body.parentCommentId = parentCommentId;
+  await outlineApi('comments.create', body);
+}
+
+/** The Outline user id behind OUTLINE_API_KEY — used to ignore the bot's own
+ *  comments so it never triggers itself. Cached after first lookup. */
+let cachedBotUserId: string | null | undefined;
+export async function getBotUserId(): Promise<string | null> {
+  if (cachedBotUserId !== undefined) return cachedBotUserId;
+  try {
+    const j = await outlineApi<{ data?: { user?: { id?: string } } }>('auth.info', {});
+    cachedBotUserId = j.data?.user?.id ?? null;
+  } catch {
+    cachedBotUserId = null;
+  }
+  return cachedBotUserId;
+}

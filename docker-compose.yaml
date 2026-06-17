@@ -23,6 +23,10 @@ services:
       - OUTLINE_BASE_URL=${OUTLINE_BASE_URL}
       - OUTLINE_API_KEY=${OUTLINE_API_KEY}
       - OUTLINE_AGENTS_COLLECTION_ID=${OUTLINE_AGENTS_COLLECTION_ID}
+      # Outline-as-a-channel: comment "@agent ..." on a doc -> editor agent edits it.
+      - OUTLINE_WEBHOOK_SECRET=${OUTLINE_WEBHOOK_SECRET:-}
+      - OUTLINE_EDITOR_AGENT=${OUTLINE_EDITOR_AGENT:-outline-editor}
+      - OUTLINE_TRIGGER=${OUTLINE_TRIGGER:-@agent}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - APP_PASSWORD=${APP_PASSWORD}
       # Auth fallback toggle — keep on while Supabase OAuth is being wired.
