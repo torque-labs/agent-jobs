@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { timingSafeEqual } from 'node:crypto';
 import { runTenantTurn, type TurnAttachment } from '@/lib/agent-runtime';
-import { getTenantForTelegram } from '@/lib/tenants';
+import { getTenantForTelegram, migrateTelegramChat } from '@/lib/tenants';
 import { gateTelegram } from '@/lib/mention';
 import { claimEvent } from '@/lib/dedupe';
 import { postTelegramPhoto } from '@/lib/channels';
@@ -61,6 +61,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
 
   const message = update.message ?? update.edited_message;
   const chatId = message?.chat?.id;
+
+  // Group → supergroup migration: re-point the enrolled tenant old → new so
+  // routing self-heals (service message has no `text` — handle before the
+  // no-text early-return).
+  if (chatId !== undefined && message?.migrate_to_chat_id !== undefined) {
+    await migrateTelegramChat(String(chatId), String(message.migrate_to_chat_id));
+    return NextResponse.json({ ok: true });
+  }
+
   const text = message?.text;
   if (chatId === undefined || !text) {
     // Non-text update (sticker, join event, etc.) — ack and ignore.
@@ -270,4 +279,6 @@ type TelegramMessage = {
   chat?: { id: number; type?: string };
   from?: { first_name?: string };
   reply_to_message?: { from?: { id?: number } };
+  /** Present on the service message when a group is upgraded to a supergroup. */
+  migrate_to_chat_id?: number;
 };

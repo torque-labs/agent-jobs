@@ -335,6 +335,42 @@ export async function getTenantByTelegramChat(chatId: string): Promise<Tenant | 
   return matches[0];
 }
 
+/**
+ * Group → supergroup migration self-heal. When Telegram upgrades a group the
+ * chat id changes (old `-12345` → new `-100…`); without this the enrolled
+ * tenant keeps the dead id and routing silently breaks. Given the old + new ids
+ * (from a message's `migrate_to_chat_id`), rewrite the enrolled tenant's
+ * allowed_chats old → new. Returns the tenant slug if migrated, else null.
+ * Never throws.
+ */
+export async function migrateTelegramChat(
+  oldChatId: string,
+  newChatId: string,
+): Promise<string | null> {
+  try {
+    const tenant = await getTenantByTelegramChat(oldChatId);
+    if (!tenant || !tenant.channels.telegram) return null;
+    const chats = tenant.channels.telegram.allowed_chats ?? [];
+    if (!chats.includes(oldChatId)) return null;
+    const allowed_chats = Array.from(
+      new Set(chats.map((c) => (c === oldChatId ? newChatId : c))),
+    );
+    await updateTenant(tenant.id, {
+      channels: {
+        ...tenant.channels,
+        telegram: { ...tenant.channels.telegram, allowed_chats },
+      },
+    });
+    console.log(
+      `[tenants] telegram chat migrated ${oldChatId} -> ${newChatId} (tenant ${tenant.slug})`,
+    );
+    return tenant.slug;
+  } catch (err) {
+    console.error('[tenants] migrateTelegramChat failed:', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
 /** Slack-routed tenants only. */
 export async function getTenantForSlack(slug: string): Promise<Tenant | null> {
   const t = await getTenantBySlug(slug);
