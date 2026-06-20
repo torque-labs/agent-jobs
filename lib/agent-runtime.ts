@@ -648,6 +648,61 @@ function buildSystemPrompt(
   return `${tenant.soul.trim()}\n${lines.join('\n')}`;
 }
 
+// Cheap, fast model used only to fact-check a finished reply against the tool
+// outputs it had available. Catches fabricated figures the soul rule lets slip.
+const GROUNDING_JUDGE_MODEL = 'z-ai/glm-4.7-flash';
+
+/**
+ * Grounding gate — the structural backstop to the system-prompt "never
+ * fabricate" rule. A model can ignore an instruction; a number that isn't in
+ * the tool data gets removed before the reply ships.
+ *
+ * Given a finished reply and the concatenated tool outputs from the same turn,
+ * a cheap judge rewrites the reply so every figure is supported by those
+ * outputs — keeping correct arithmetic derivations, stripping anything the
+ * tools didn't produce. Fails OPEN (returns the original) on any error so a
+ * transient judge failure never blocks a turn.
+ */
+async function groundReply(reply: string, toolOutputs: string): Promise<string> {
+  const prompt =
+    'You are a strict fact-checker for an analytics assistant. Below are the TOOL OUTPUTS ' +
+    '(the only data the assistant actually retrieved this turn) and its draft REPLY.\n\n' +
+    'Rewrite the REPLY so EVERY number, rank, wallet address, percentage, dollar amount, ' +
+    'count, or date is supported by the TOOL OUTPUTS:\n' +
+    '- Arithmetic correctly derived from the tool outputs (e.g. a sum or average of listed ' +
+    'values) is allowed — keep it.\n' +
+    '- Any figure NOT supported by the tool outputs is a fabrication: remove it or replace it ' +
+    'with "(not available)".\n' +
+    '- If the TOOL OUTPUTS are empty, the assistant retrieved nothing — strip ALL specific ' +
+    'figures and say the data was not pulled.\n' +
+    '- Otherwise preserve the reply\'s wording, structure, and formatting EXACTLY. If every ' +
+    'figure is already supported, return the reply unchanged, verbatim.\n' +
+    'Return ONLY the corrected reply text — no preamble, no explanation.\n\n' +
+    '=== TOOL OUTPUTS ===\n' +
+    (toolOutputs.slice(0, 120_000) || '(no tools were called this turn)') +
+    '\n\n=== REPLY ===\n' +
+    reply;
+  try {
+    const client = selectClient(GROUNDING_JUDGE_MODEL);
+    const completion = (await client.chat.completions.create({
+      model: GROUNDING_JUDGE_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 4096,
+      temperature: 0,
+      stream: false,
+    })) as ChatCompletion;
+    const out = completion.choices?.[0]?.message?.content;
+    const text = typeof out === 'string' ? out.trim() : '';
+    return text || reply;
+  } catch (err) {
+    console.error(
+      '[grounding] judge failed; shipping original reply:',
+      err instanceof Error ? err.name : 'error',
+    );
+    return reply;
+  }
+}
+
 /**
  * Run one conversational turn for a tenant. Never throws for ordinary failures
  * — returns a friendly fallback reply and logs. Throws only if the tenant id is
@@ -1121,6 +1176,24 @@ export async function runTenantTurn(
           `[turn] tenant=${tenant.slug} stripped Markdown table from reply (card already rendered)`,
         );
         finalText = stripResult.text;
+      }
+    }
+
+    // Grounding gate: every figure in the reply must trace to THIS turn's tool
+    // outputs — fabricated numbers the soul rule let slip get stripped before
+    // the reply ships. Runs only when the reply contains figures; skipped for
+    // the doc editor (its reply is a whole document full of pre-existing numbers,
+    // not an analytics answer).
+    const editorSlug = process.env.OUTLINE_EDITOR_AGENT ?? 'outline-editor';
+    if (/\d/.test(finalText) && tenant.slug !== editorSlug) {
+      const toolOutputs = messages
+        .filter((m) => m.role === 'tool')
+        .map((m) => (typeof m.content === 'string' ? m.content : ''))
+        .join('\n---\n');
+      const grounded = await groundReply(finalText, toolOutputs);
+      if (grounded !== finalText) {
+        console.log(`[turn] tenant=${tenant.slug} grounding gate revised the reply`);
+        finalText = grounded;
       }
     }
 
