@@ -56,11 +56,13 @@ const DEFAULT_TURN_TIMEOUT_MS = 120_000;
 // above the per-class MCP SDK request timeouts (lib/mcp.ts) so the inner one
 // fires first with a cleaner error; this is the last-resort outer guard.
 const TOOL_CALL_TIMEOUT_MS = 200_000;
-// Whole-turn budget. Each iteration's LLM call + tool calls are bounded
-// individually, but multi-iteration turns can still exceed any reasonable
-// wall-clock; this is the hard cap so the user gets a clean "try narrowing
-// it" message instead of waiting indefinitely.
-const TURN_BUDGET_MS = 10 * 60_000;
+// Whole-turn wall-clock budget for INTERACTIVE chat (Slack/Telegram). Each
+// model call + tool call is bounded individually, but a model that keeps
+// requesting tools (GLM does this on hard analytical questions) can grind for
+// many iterations — at the old 10-min cap that read as a dead bot. 2 min is the
+// hard cap; on hitting it we force a final answer from what's already gathered
+// (see the deadline branch) rather than leave the user with silence.
+const TURN_BUDGET_MS = 120_000;
 
 /** A single prior message in the conversation, oldest first. */
 export type ConversationMessage = {
@@ -1031,9 +1033,48 @@ export async function runTenantTurn(
     for (let iter = 0; iter < MAX_TOOL_LOOP_ITERATIONS; iter++) {
       if (Date.now() > turnDeadline) {
         budgetExceeded = true;
-        finalText =
-          'Sorry — that query is taking longer than I can spend on it. ' +
-          'Try narrowing it (smaller date range, fewer wallets, or a more specific metric) and I\'ll re-run.';
+        // Don't bail to a canned failure — the agent has likely already pulled
+        // useful data over the prior iterations. Force ONE final answer from
+        // what's gathered (no tools), so a slow/looping model (e.g. GLM on a
+        // hard analytical turn) returns a real partial answer instead of
+        // hanging into silence.
+        try {
+          const synth = await callWithTimeout(
+            client.chat.completions.create({
+              model: tenant.model,
+              messages: [
+                ...messages,
+                {
+                  role: 'user',
+                  content:
+                    'You are out of time. Answer the original question NOW using ONLY the ' +
+                    'tool results already gathered above — do not request any more tools. ' +
+                    'State only figures supported by those results; if something is still ' +
+                    'missing, say so briefly rather than guessing.',
+                },
+              ],
+              max_tokens: 4096,
+              stream: false,
+            }),
+            30_000,
+            `tenant ${tenant.slug} synthesis timed out`,
+          );
+          if (synth.usage) {
+            tokensIn += synth.usage.prompt_tokens ?? 0;
+            tokensOut += synth.usage.completion_tokens ?? 0;
+          }
+          const synthText = synth.choices?.[0]?.message?.content;
+          finalText = typeof synthText === 'string' && synthText.trim() ? synthText : null;
+        } catch (err) {
+          console.error(
+            `[turn] tenant=${tenant.slug} synthesis-on-timeout failed: ${err instanceof Error ? err.name : 'error'}`,
+          );
+        }
+        if (!finalText) {
+          finalText =
+            'Sorry — that query is taking longer than I can spend on it. ' +
+            'Try narrowing it (smaller date range, fewer wallets, or a more specific metric) and I\'ll re-run.';
+        }
         break;
       }
       const completion: ChatCompletion = await callWithTimeout(
